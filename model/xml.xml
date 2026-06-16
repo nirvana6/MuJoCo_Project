@@ -1,0 +1,12 @@
+<!--这个文件描述一个人-->
+<person  name="xiaoming" year="11" profession="student">
+    <body>
+       <hand >
+           <Lhand></Lhand>
+           <Rhand num_finger="5" />
+       </hand>
+    </body>
+
+    <brain >
+    </brain>
+</person>
