@@ -1,0 +1,18 @@
+# 由 uv 管理的缓存与虚拟环境
+.venv/
+__pycache__/
+*.py[cod]
+
+# matplotlib / MuJoCo 运行产物
+*.png
+*.mp4
+MUJOCO_LOG.TXT
+runs/
+tb_logs/
+
+# uv 自动下载的解释器
+.python-version.bak
+
+# 编辑器
+.idea/
+.vscode/
