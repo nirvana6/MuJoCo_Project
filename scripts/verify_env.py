@@ -11,9 +11,8 @@ import os
 import sys
 from pathlib import Path
 
-import numpy as np
-
 import mujoco
+import numpy as np
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_XML = "model/universal_robots_ur5e/scene.xml"
@@ -41,7 +40,9 @@ def check_scene_assets(model):
     try:
         site_id = model.site("attachment_site").id
     except KeyError:
-        failures.append("assets : 模型里没有 attachment_site（MuJoCo_project.py 依赖它）")
+        failures.append(
+            "assets : 模型里没有 attachment_site（MuJoCo_project.py 依赖它）"
+        )
         return
     print(f"assets  : site 'attachment_site' id={site_id} OK")
 
@@ -57,7 +58,9 @@ def check_render(model, data):
     print(f"render  : {pixels.shape} colors={colors} std={pixels.std():.1f}")
     # 死掉的 GL 上下文返回全零/单色帧，不会抛异常 —— 必须靠数字判断
     if pixels.std() < 1.0 or colors < 10:
-        failures.append(f"render: 画面疑似空白 (std={pixels.std():.2f}, colors={colors})")
+        failures.append(
+            f"render: 画面疑似空白 (std={pixels.std():.2f}, colors={colors})"
+        )
 
 
 def check_window():

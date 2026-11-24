@@ -19,3 +19,11 @@ rl = [
     "tensorboard>=2.21.0",
     "torch>=2.15.0",
 ]
+
+[tool.ruff]
+target-version = "py312"
+# model/ 下是两个上游仓库的完整拷贝，不属于本项目的代码，不参与 lint
+extend-exclude = [
+    "model/universal_robot-noetic-devel",
+    "model/tutorial_for_mujoco-main",
+]

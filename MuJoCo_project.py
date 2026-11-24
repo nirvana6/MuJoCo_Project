@@ -1,28 +1,32 @@
+import time
+
+import ikpy.chain
+import matplotlib.pyplot as plt
 import mujoco
 import mujoco.viewer
-import time
-import ikpy.chain
-import transforms3d as tf
-import matplotlib.pyplot as plt
 import numpy as np
-from scipy.spatial.transform import Rotation as R, Slerp
+import transforms3d as tf
+from scipy.spatial.transform import Rotation as R
+from scipy.spatial.transform import Slerp
+
 
 # 小车
 def car():
-    model = mujoco.MjModel.from_xml_path('./model/car.xml')
+    model = mujoco.MjModel.from_xml_path("./model/car.xml")
     data = mujoco.MjData(model)
 
     # data.ctrl[0] = 0.0
     # data.ctrl[1] = 0.001
-    with mujoco.viewer.launch_passive(model,data) as viewer:
+    with mujoco.viewer.launch_passive(model, data) as viewer:
         # 主仿真循环
         while viewer.is_running():
             mujoco.mj_step(model, data)
             viewer.sync()
 
-#机械臂测试
+
+# 机械臂测试
 def ur5e():
-    model = mujoco.MjModel.from_xml_path('model/universal_robots_ur5e/scene.xml')
+    model = mujoco.MjModel.from_xml_path("model/universal_robots_ur5e/scene.xml")
     data = mujoco.MjData(model)
 
     start_joints = np.array([0, 0, 2.65, -1.3, 1.55, 0])
@@ -35,8 +39,9 @@ def ur5e():
             viewer.sync()
             time.sleep(0.002)
 
+
 def ur5e_vision():
-    model = mujoco.MjModel.from_xml_path('model/universal_robots_ur5e/scene.xml')
+    model = mujoco.MjModel.from_xml_path("model/universal_robots_ur5e/scene.xml")
     data = mujoco.MjData(model)
 
     start_joints = np.array([0, 0, 2.65, -1.3, 1.55, 0])
@@ -50,12 +55,12 @@ def ur5e_vision():
     # ---------- matplotlib 实时绘图准备 ----------
     plt.ion()  # 交互模式
     fig = plt.figure()
-    ax = fig.add_subplot(111, projection='3d')
-    ax.set_xlabel('X (m)')
-    ax.set_ylabel('Y (m)')
-    ax.set_zlabel('Z (m)')
-    ax.set_title('UR5e End‑Effector Trajectory (real‑time)')
-    line, = ax.plot([], [], [], 'b-', linewidth=1)  # 空曲线，后续更新
+    ax = fig.add_subplot(111, projection="3d")
+    ax.set_xlabel("X (m)")
+    ax.set_ylabel("Y (m)")
+    ax.set_zlabel("Z (m)")
+    ax.set_title("UR5e End‑Effector Trajectory (real‑time)")
+    (line,) = ax.plot([], [], [], "b-", linewidth=1)  # 空曲线，后续更新
     plt.show(block=False)
 
     with mujoco.viewer.launch_passive(model, data) as viewer:
@@ -83,7 +88,7 @@ def ur5e_vision():
                     size=[0.003, 0, 0],  # 小球半径 3 mm
                     pos=np.array(current_pos, dtype=np.float64),
                     mat=np.eye(3).flatten(),
-                    rgba=np.array([1.0, 0.0, 0.0, 1.0])  # 红色
+                    rgba=np.array([1.0, 0.0, 0.0, 1.0]),  # 红色
                 )
                 viewer.user_scn.ngeom += 1
 
@@ -100,15 +105,22 @@ def ur5e_vision():
 
         # 退出后关闭 matplotlib 图窗
         plt.close(fig)
+
+
 def point():
-    model = mujoco.MjModel.from_xml_path('model/universal_robots_ur5e/scene.xml')
+    model = mujoco.MjModel.from_xml_path("model/universal_robots_ur5e/scene.xml")
     data = mujoco.MjData(model)
 
-    my_chain = ikpy.chain.Chain.from_urdf_file("model/ur5e.urdf",
-                                               active_links_mask=[False] + [True] * 6 + [False])
+    my_chain = ikpy.chain.Chain.from_urdf_file(
+        "model/ur5e.urdf", active_links_mask=[False] + [True] * 6 + [False]
+    )
 
-    start_joints = np.array([-1.57, -1.34, 2.65, -1.3, 1.55, 0])  # 对应机械臂初始位姿[-0.14, 0.3, 0.1, 3.14, 0, 1.57]
-    data.qpos[:6] = start_joints  # 确保渲染一开始机械臂便处于起始位置，而非MJCF中的默认位置
+    start_joints = np.array(
+        [-1.57, -1.34, 2.65, -1.3, 1.55, 0]
+    )  # 对应机械臂初始位姿[-0.14, 0.3, 0.1, 3.14, 0, 1.57]
+    data.qpos[:6] = (
+        start_joints  # 确保渲染一开始机械臂便处于起始位置，而非MJCF中的默认位置
+    )
 
     # 设置目标点
     ee_pos = [-0.13, 0.6, 0.1]
@@ -117,7 +129,9 @@ def point():
     ee_orientation = tf.euler.euler2mat(*ee_euler)
 
     # 由目标位姿求解关节角
-    joint_angles = my_chain.inverse_kinematics(ee_pos, ee_orientation, "all", initial_position=ref_pos)
+    joint_angles = my_chain.inverse_kinematics(
+        ee_pos, ee_orientation, "all", initial_position=ref_pos
+    )
 
     end_joints = joint_angles[1:-1]
 
@@ -128,6 +142,8 @@ def point():
             mujoco.mj_step(model, data)
             viewer.sync()
             time.sleep(0.002)
+
+
 def viewer_init(viewer):
     """渲染器的摄像头视角初始化"""
     viewer.cam.type = mujoco.mjtCamera.mjCAMERA_FREE
@@ -136,9 +152,9 @@ def viewer_init(viewer):
     viewer.cam.azimuth = 180
     viewer.cam.elevation = -30
 
-#关节空间控制(MoveJ)
-class JointSpaceTrajectory:
 
+# 关节空间控制(MoveJ)
+class JointSpaceTrajectory:
     def __init__(self, start_joints, end_joints, steps):
         self.start_joints = np.array(start_joints)
         self.end_joints = np.array(end_joints)
@@ -163,13 +179,13 @@ class JointSpaceTrajectory:
                 pass
         return self.waypoint
 
+
 def JointSpaceControl():
-    model = mujoco.MjModel.from_xml_path('model/universal_robots_ur5e/scene.xml')
+    model = mujoco.MjModel.from_xml_path("model/universal_robots_ur5e/scene.xml")
     data = mujoco.MjData(model)
 
     my_chain = ikpy.chain.Chain.from_urdf_file(
-        "model/ur5e.urdf",
-        active_links_mask=[False] + [True] * 6 + [False]
+        "model/ur5e.urdf", active_links_mask=[False] + [True] * 6 + [False]
     )
 
     start_joints = np.array([-1.57, -1.34, 2.65, -1.3, 1.55, 0])
@@ -178,35 +194,37 @@ def JointSpaceControl():
     # 目标位姿
     ee_pos = [-0.13, 0.6, 0.1]
     ee_euler = [3.14, 0, 1.57]
-    ref_pos = [0, -1.57, -1.34, 2.65, -1.3, 1.55, 0, 0]   # 长度 8，与链匹配
+    ref_pos = [0, -1.57, -1.34, 2.65, -1.3, 1.55, 0, 0]  # 长度 8，与链匹配
     ee_orientation = tf.euler.euler2mat(*ee_euler)
 
-    joint_angles = my_chain.inverse_kinematics(ee_pos, ee_orientation, "all", initial_position=ref_pos)
-    end_joints = joint_angles[1:-1]   # 提取活动关节角
+    joint_angles = my_chain.inverse_kinematics(
+        ee_pos, ee_orientation, "all", initial_position=ref_pos
+    )
+    end_joints = joint_angles[1:-1]  # 提取活动关节角
 
     joint_trajectory = JointSpaceTrajectory(start_joints, end_joints, steps=100)
 
     # ---------- 末端轨迹记录与可视化准备 ----------
     site_id = model.site("attachment_site").id
-    history_positions = []               # 存储末端位置
+    history_positions = []  # 存储末端位置
 
     # Matplotlib 实时图初始化
     plt.ion()
     fig = plt.figure()
-    ax = fig.add_subplot(111, projection='3d')
-    ax.set_xlabel('X (m)')
-    ax.set_ylabel('Y (m)')
-    ax.set_zlabel('Z (m)')
-    ax.set_title('UR5e End‑Effector Trajectory (Joint Space)')
-    line, = ax.plot([], [], [], 'b-', linewidth=1.5)
+    ax = fig.add_subplot(111, projection="3d")
+    ax.set_xlabel("X (m)")
+    ax.set_ylabel("Y (m)")
+    ax.set_zlabel("Z (m)")
+    ax.set_title("UR5e End‑Effector Trajectory (Joint Space)")
+    (line,) = ax.plot([], [], [], "b-", linewidth=1.5)
     plt.show(block=False)
 
     # MuJoCo viewer
     with mujoco.viewer.launch_passive(model, data) as viewer:
         viewer_init(viewer)
-        viewer.user_scn.ngeom = 0          # 清空用户几何体
+        viewer.user_scn.ngeom = 0  # 清空用户几何体
         step_count = 0
-        max_spheres = 2000                 # 球体上限
+        max_spheres = 2000  # 球体上限
 
         while viewer.is_running():
             # 获取关节空间路径点并控制
@@ -229,7 +247,7 @@ def JointSpaceControl():
                     size=[0.003, 0, 0],
                     pos=np.array(current_pos, dtype=np.float64),
                     mat=np.eye(3).flatten(),
-                    rgba=np.array([1.0, 0.0, 0.0, 1.0])
+                    rgba=np.array([1.0, 0.0, 0.0, 1.0]),
                 )
                 viewer.user_scn.ngeom += 1
 
@@ -245,16 +263,17 @@ def JointSpaceControl():
 
         plt.close(fig)
 
-#笛卡尔空间控制(MoveL)
-#位置线性插值，姿态slerp插值
+
+# 笛卡尔空间控制(MoveL)
+# 位置线性插值，姿态slerp插值
 class CartesianTrajectory:
     def __init__(self, p_start, euler_start, p_end, euler_end, num_points=100):
         self.num_points = num_points
-        #位置插值
+        # 位置插值
         self.positions = np.linspace(p_start, p_end, num_points)
-        #姿态插值，Slerp插值
-        rot_start = R.from_euler('xyz', euler_start)
-        rot_end = R.from_euler('xyz', euler_end)
+        # 姿态插值，Slerp插值
+        rot_start = R.from_euler("xyz", euler_start)
+        rot_end = R.from_euler("xyz", euler_end)
         self.rotations = Slerp([0, 1], R.concatenate([rot_start, rot_end]))(
             np.linspace(0, 1, num_points)
         )
@@ -269,34 +288,35 @@ class CartesianTrajectory:
         else:
             return self.positions[-1], self.rotations[-1].as_matrix()
 
+
 def MoveCurve():
-    model = mujoco.MjModel.from_xml_path('model/universal_robots_ur5e/scene.xml')
+    model = mujoco.MjModel.from_xml_path("model/universal_robots_ur5e/scene.xml")
     data = mujoco.MjData(model)
-    my_chain = ikpy.chain.Chain.from_urdf_file("model/ur5e.urdf",
-                                               active_links_mask=[False] + [True] * 6 + [False])
+    my_chain = ikpy.chain.Chain.from_urdf_file(
+        "model/ur5e.urdf", active_links_mask=[False] + [True] * 6 + [False]
+    )
 
     # 起始位姿
     p_start = [0.4, -0.15, 0.45]
     euler_start = [3.14, 0.0, 0.0]
     # 目标位姿
-    p_end     = [0.1, -0.15, 0.45]
-    euler_end   = [3.14, 0.0, 0.0]
+    p_end = [0.1, -0.15, 0.45]
+    euler_end = [3.14, 0.0, 0.0]
 
-    #计算起始位姿
+    # 计算起始位姿
     initial_guess = [0.0] * 8
-    start_rot = R.from_euler('xyz', euler_start).as_matrix()
+    start_rot = R.from_euler("xyz", euler_start).as_matrix()
     start_joints = my_chain.inverse_kinematics(
         p_start, start_rot, "all", initial_position=initial_guess
     )
 
-    #设置初始位姿
+    # 设置初始位姿
     q_start = start_joints[1:-1]  # 6个关节角
     data.qpos[:6] = q_start
     mujoco.mj_forward(model, data)
 
-    #得到轨迹
+    # 得到轨迹
     traj = CartesianTrajectory(p_start, euler_start, p_end, euler_end, num_points=100)
-
 
     # ---------- 可视化准备：预先收集所有轨迹点（末端位置）----------
     # 为保持一致性，直接利用 CartesianTrajectory 内部数据
@@ -305,32 +325,45 @@ def MoveCurve():
 
     # 用于 matplotlib 的姿态坐标轴绘制
     fig = plt.figure()
-    ax = fig.add_subplot(111, projection='3d')
-    ax.set_xlabel('X');
-    ax.set_ylabel('Y');
-    ax.set_zlabel('Z')
+    ax = fig.add_subplot(111, projection="3d")
+    ax.set_xlabel("X")
+    ax.set_ylabel("Y")
+    ax.set_zlabel("Z")
     # 绘制位置连线
-    ax.plot(all_positions[:, 0], all_positions[:, 1], all_positions[:, 2], marker='o', markersize=2)
+    ax.plot(
+        all_positions[:, 0],
+        all_positions[:, 1],
+        all_positions[:, 2],
+        marker="o",
+        markersize=2,
+    )
     # 每隔一定间隔绘制姿态坐标轴
     step = max(1, all_positions.shape[0] // 20)  # 约20组轴
     for i in range(0, all_positions.shape[0], step):
         pos = all_positions[i]
         rot_mat = all_rotations[i].as_matrix()
-        for axis, color in zip([0, 1, 2], ['r', 'g', 'b']):
-            ax.quiver(pos[0], pos[1], pos[2],
-                      rot_mat[0, axis], rot_mat[1, axis], rot_mat[2, axis],
-                      color=color, length=0.02, normalize=True)
+        for axis, color in zip([0, 1, 2], ["r", "g", "b"]):
+            ax.quiver(
+                pos[0],
+                pos[1],
+                pos[2],
+                rot_mat[0, axis],
+                rot_mat[1, axis],
+                rot_mat[2, axis],
+                color=color,
+                length=0.02,
+                normalize=True,
+            )
     plt.ion()  # 交互模式，不阻塞
     plt.show(block=False)
     # ---------- 可视化准备：预先收集所有轨迹点（末端位置）----------
 
-
-    #参数设置
+    # 参数设置
     ik_guess = list(start_joints)
     pos_tolerance = 0.01
     site_id = model.site("attachment_site").id
 
-    #初始化第一个目标点
+    # 初始化第一个目标点
     target_pos, target_rot = traj.get_next_pose()
 
     with mujoco.viewer.launch_passive(model, data) as viewer:
@@ -350,7 +383,7 @@ def MoveCurve():
                 size=[0.005, 0, 0],  # 半径 0.005 m
                 pos=np.array(pos, dtype=np.float64),
                 mat=np.eye(3).flatten(),
-                rgba=np.array([1.0, 0.0, 0.0, 1.0])  # 红色
+                rgba=np.array([1.0, 0.0, 0.0, 1.0]),  # 红色
             )
             viewer.user_scn.ngeom += 1
         print(f"Added {viewer.user_scn.ngeom} trajectory spheres to MuJoCo viewer.")
@@ -368,26 +401,34 @@ def MoveCurve():
                 target_pos, target_rot = new_pos, new_rot
 
             joint_angles = my_chain.inverse_kinematics(
-                target_pos, target_pos, "all",
-                initial_position=ik_guess)
+                target_pos, target_rot, "all", initial_position=ik_guess
+            )
 
             data.ctrl[:6] = joint_angles[1:-1]
-            ref_pos = list(joint_angles)
+            ik_guess = list(joint_angles)  # 更新猜测，加速下一次 IK
 
             mujoco.mj_step(model, data)
             viewer.sync()
 
     plt.close(fig)
 
-#椭圆轨迹
-def generate_ellipse_points(center, a, b, num_points=200,
-                            plane_normal=(0, 0, 1), start_angle=0, end_angle=2*np.pi):
+
+# 椭圆轨迹
+def generate_ellipse_points(
+    center,
+    a,
+    b,
+    num_points=200,
+    plane_normal=(0, 0, 1),
+    start_angle=0,
+    end_angle=2 * np.pi,
+):
 
     t = np.linspace(start_angle, end_angle, num_points)
     # 二维椭圆坐标（u-v 平面）
     uv = np.zeros((num_points, 3))
-    uv[:, 0] = a * np.cos(t)   # u 轴分量
-    uv[:, 1] = b * np.sin(t)   # v 轴分量
+    uv[:, 0] = a * np.cos(t)  # u 轴分量
+    uv[:, 1] = b * np.sin(t)  # v 轴分量
 
     # 构造局部坐标系 u, v, n
     n = np.array(plane_normal, dtype=float)
@@ -399,18 +440,19 @@ def generate_ellipse_points(center, a, b, num_points=200,
         ref = np.array([0, 1, 0])
     u = np.cross(n, ref)
     u /= np.linalg.norm(u)
-    v = np.cross(n, u)   # 右手系
+    v = np.cross(n, u)  # 右手系
 
     # 旋转并平移到中心
     rot = np.column_stack((u, v, n))  # 3x3 旋转矩阵
     points = center + uv @ rot.T
     return points
+
+
 def MoveEllipse():
-    model = mujoco.MjModel.from_xml_path('model/universal_robots_ur5e/scene.xml')
+    model = mujoco.MjModel.from_xml_path("model/universal_robots_ur5e/scene.xml")
     data = mujoco.MjData(model)
     my_chain = ikpy.chain.Chain.from_urdf_file(
-        "model/ur5e.urdf",
-        active_links_mask=[False] + [True] * 6 + [False]
+        "model/ur5e.urdf", active_links_mask=[False] + [True] * 6 + [False]
     )
 
     # 定义椭圆参数
@@ -420,12 +462,13 @@ def MoveEllipse():
     num_points = 200  # 轨迹点数
 
     # 生成椭圆轨迹点
-    ellipse_points = generate_ellipse_points(center, a, b, num_points=num_points,
-                                             plane_normal=plane_normal)
+    ellipse_points = generate_ellipse_points(
+        center, a, b, num_points=num_points, plane_normal=plane_normal
+    )
 
     # 设定固定的末端姿态（例如工具轴垂直向下）
     euler_fixed = [3.14, 0.0, 0.0]  # roll=π, pitch=0, yaw=0
-    fixed_rot = R.from_euler('xyz', euler_fixed).as_matrix()
+    fixed_rot = R.from_euler("xyz", euler_fixed).as_matrix()
 
     # --- 1. 计算椭圆起点对应的关节角，初始化机械臂 ---
     p_start = ellipse_points[0]  # 第一个点
@@ -437,25 +480,29 @@ def MoveEllipse():
     data.qpos[:6] = q_start
     mujoco.mj_forward(model, data)  # 立即更新仿真状态
 
-
     # ---------- matplotlib 可视化：提前绘制椭圆轨迹 ----------
     plt.ion()  # 开启交互模式，不阻塞主循环
     fig = plt.figure()
-    ax = fig.add_subplot(111, projection='3d')
-    ax.set_xlabel('X (m)')
-    ax.set_ylabel('Y (m)')
-    ax.set_zlabel('Z (m)')
-    ax.set_title('Ellipse Trajectory Preview')
+    ax = fig.add_subplot(111, projection="3d")
+    ax.set_xlabel("X (m)")
+    ax.set_ylabel("Y (m)")
+    ax.set_zlabel("Z (m)")
+    ax.set_title("Ellipse Trajectory Preview")
     # 绘制椭圆曲线
-    ax.plot(ellipse_points[:, 0], ellipse_points[:, 1], ellipse_points[:, 2],
-            color='blue', linewidth=2, label='Desired path')
+    ax.plot(
+        ellipse_points[:, 0],
+        ellipse_points[:, 1],
+        ellipse_points[:, 2],
+        color="blue",
+        linewidth=2,
+        label="Desired path",
+    )
     # 标记起点（绿色）和终点（红色）——椭圆是闭合的，这里终点就是起点，但仍可标注
-    ax.scatter(*ellipse_points[0], color='green', s=50, label='Start')
-    ax.scatter(*ellipse_points[-1], color='red', s=50, label='End')
+    ax.scatter(*ellipse_points[0], color="green", s=50, label="Start")
+    ax.scatter(*ellipse_points[-1], color="red", s=50, label="End")
     ax.legend()
     plt.show(block=False)
     # ---------- matplotlib 可视化：提前绘制椭圆轨迹 ----------
-
 
     # --- 2. 准备主循环 ---
     ik_guess = list(start_joints)  # 动态初始猜测
@@ -481,7 +528,7 @@ def MoveEllipse():
                 size=[0.005, 0, 0],
                 pos=np.array(pt, dtype=np.float64),
                 mat=np.eye(3).flatten(),
-                rgba=np.array([1.0, 0.0, 0.0, 1.0])
+                rgba=np.array([1.0, 0.0, 0.0, 1.0]),
             )
             viewer.user_scn.ngeom += 1
         print(f"Added {viewer.user_scn.ngeom} trajectory spheres to MuJoCo viewer.")
@@ -507,11 +554,12 @@ def MoveEllipse():
             viewer.sync()
         plt.close(fig)
 
+
 if __name__ == "__main__":
     # car()
     ur5e()
     # ur5e_vision()
-    #point()
+    # point()
     # JointSpaceControl()
     # MoveCurve()
     # MoveEllipse()

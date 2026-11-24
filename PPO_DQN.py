@@ -1,22 +1,23 @@
-import numpy as np
-import mujoco
+import time
+import warnings
+
 import gymnasium as gym
+import mujoco
+import mujoco.viewer
+import numpy as np
+import torch
 from gymnasium import spaces
+from scipy.spatial.transform import Rotation as R
 from stable_baselines3 import PPO
 from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.vec_env import SubprocVecEnv
-import torch.nn as nn
-import warnings
-import torch
-import mujoco.viewer
-import time
-from typing import Optional
-from scipy.spatial.transform import Rotation as R
+from torch import nn
 
 # 忽略stable-baselines3的冗余UserWarning
 warnings.filterwarnings("ignore", category=UserWarning, module="stable_baselines3.common.on_policy_algorithm")
 
 import os
+
 
 def write_flag_file(flag_filename="rl_visu_flag"):
     flag_path = os.path.join("/tmp", flag_filename)
@@ -24,7 +25,7 @@ def write_flag_file(flag_filename="rl_visu_flag"):
         with open(flag_path, "w") as f:
             f.write("This is a flag file")
         return True
-    except Exception as e:
+    except OSError:
         return False
 
 def check_flag_file(flag_filename="rl_visu_flag"):
@@ -38,12 +39,12 @@ def delete_flag_file(flag_filename="rl_visu_flag"):
     try:
         os.remove(flag_path)
         return True
-    except Exception as e:
+    except OSError:
         return False
 
 class PandaObstacleEnv(gym.Env):
     def __init__(self, visualize: bool = False):
-        super(PandaObstacleEnv, self).__init__()
+        super().__init__()
         if not check_flag_file():
             write_flag_file()
             self.visualize = visualize
@@ -117,7 +118,7 @@ class PandaObstacleEnv(gym.Env):
             rgba=goal_rgba
         )
 
-    def reset(self, seed: Optional[int] = None, options: Optional[dict] = None) -> tuple[np.ndarray, dict]:
+    def reset(self, seed: int | None = None, options: dict | None = None) -> tuple[np.ndarray, dict]:
         super().reset(seed=seed)
         if seed is not None:
             self.np_random = np.random.default_rng(seed)
@@ -197,7 +198,6 @@ class PandaObstacleEnv(gym.Env):
         # 动作相关惩罚（保持不变）
         action_diff = action - self.prev_action
         smooth_penalty = 0.1 * np.linalg.norm(action_diff)
-        action_magnitude_penalty = 0.05 * np.linalg.norm(action)
 
         # 碰撞惩罚（保持不变）
         contact_reward = 1.0 * self.data.ncon
@@ -210,9 +210,6 @@ class PandaObstacleEnv(gym.Env):
                 joint_penalty += 0.5 * (min_angle - joint_angles[i])
             elif joint_angles[i] > max_angle:
                 joint_penalty += 0.5 * (joint_angles[i] - max_angle)
-
-        # 时间惩罚（保持不变）
-        time_penalty = 0.01
 
         # 总奖励：整合新的直线奖励和远离惩罚
         total_reward = (distance_reward
@@ -253,11 +250,10 @@ class PandaObstacleEnv(gym.Env):
             terminated = True
         # print(f"[奖励] 距离目标: {dist_to_goal:.3f}, 奖励: {reward:.3f}")
 
-        if not terminated:
-            if time.time() - self.start_t > 20.0:
-                reward -= 10.0
-                print(f"[超时] 时间过长，奖励减半")
-                terminated = True
+        if not terminated and time.time() - self.start_t > 20.0:
+            reward -= 10.0
+            print("[超时] 时间过长，奖励减半")
+            terminated = True
 
         if self.visualize and self.handle is not None:
             self.handle.sync()
@@ -272,7 +268,7 @@ class PandaObstacleEnv(gym.Env):
 
         return obs, reward.astype(np.float32), terminated, False, info
 
-    def seed(self, seed: Optional[int] = None) -> list[Optional[int]]:
+    def seed(self, seed: int | None = None) -> list[int | None]:
         self.np_random = np.random.default_rng(seed)
         return [seed]
 
@@ -291,7 +287,7 @@ def train_ppo(
     total_timesteps = 40_000_000,  # 本次训练的新增步数
     model_save_path = "panda_ppo_reach_target",
     visualize= False,
-    resume_from: Optional[str] = None
+    resume_from: str | None = None
 ) -> None:
     os.environ["OMP_NUM_THREADS"] = "1"
     os.environ["MKL_NUM_THREADS"] = "1"
@@ -306,10 +302,10 @@ def train_ppo(
     if resume_from is not None:
         model = PPO.load(resume_from, env=env)  # 加载时需传入当前环境
     else:
-        POLICY_KWARGS = dict(
-            activation_fn=nn.ReLU,
-            net_arch=[dict(pi=[128, 64], vf=[128, 64])]
-        )
+        POLICY_KWARGS = {
+            "activation_fn": nn.ReLU,
+            "net_arch": [{"pi": [128, 64], "vf": [128, 64]}],
+        }
         model = PPO(
             policy="MlpPolicy",
             env=env,
@@ -341,13 +337,6 @@ def test_ppo(
 ) -> None:
     env = PandaObstacleEnv(visualize=True)
     model = PPO.load(model_path, env=env)
-
-    record_gif = False
-    frames = [] if record_gif else None
-    render_scene = None
-    render_context = None
-    pixel_buffer = None
-    viewport = None
 
     success_count = 0
     print(f"测试轮数: {total_episodes}")

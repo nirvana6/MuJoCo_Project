@@ -12,9 +12,9 @@ ikpy 的 inverse_kinematics 是局部优化，initial_position 落在坏盆地�
 import sys
 from pathlib import Path
 
+import ikpy.chain
 import numpy as np
 import transforms3d as tf
-import ikpy.chain
 
 ROOT = Path(__file__).resolve().parent.parent
 chain = ikpy.chain.Chain.from_urdf_file(
