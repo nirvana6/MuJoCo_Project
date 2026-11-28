@@ -1,0 +1,81 @@
+<mujoco>
+  <!--
+    教学案例：geom 的 size 不能省。
+
+    报错原文：Error: size 0 must be positive in geom
+              Element name '', id 0, line 10
+
+    原因：MJCF 中 <geom> 的 size 默认值是 "0 0 0"，编译器不会替你猜尺寸；
+         box / ellipsoid / sphere / cylinder / plane 在尺寸为 0 时直接编译失败。
+         size 不是"可选优化项"——除下面列出的分量外，其余分量必须留默认值（不能写成 0 填充）。
+
+    各类型实际需要的 size 分量（MuJoCo 4.0.1 实测）：
+      box        3 个半长                size="x y z"
+      ellipsoid  3 个半轴                size="x y z"
+      sphere     1 个半径                size="r"
+      cylinder   2 个：半径, 半高        size="r h"（半高=总高/2）
+      plane      第 3 个分量是网格间距，必须 >0
+                 size="1 1" 或 "1 1 0" 都会报 plane size(3) must be positive
+
+    注意：编译器一次只报第一个出错的 geom。只修 line 10 的 box，报错会挪到
+         line 12（ellipsoid）→ line 13（sphere）→ line 14（cylinder）。
+  -->
+
+  <!-- 顶层 default 元素的类名恒为 main，写 class="main" 合法但冗余；
+       改成 class="foo" 会立刻报 top-level default class 'main' cannot be renamed。
+       非顶层元素不写 class 时继承的就是这个 main。 -->
+  <default class="main">
+    <geom rgba="1 0 0 1"/>
+    <default class="sub">
+      <geom rgba="0 1 0 1"/>
+    </default>
+  </default>
+
+  <worldbody>
+    <!-- 原代码（缺 size，正是报错源）：
+      <geom type="box"/>
+      修正：3 个半长 → 边长 0.2 的立方体
+    -->
+    <geom type="box" size="0.1 0.1 0.1"/>
+
+    <!-- 带 slide 关节的 body：沿 x 轴滑动，限位 ±0.1 -->
+    <body>
+      <geom type="box" size="0.1 0.1 0.1"/>
+      <joint name="slide" type="slide" axis="1 0 0" limited="true" range="-0.1 0.1"/>
+    </body>
+
+    <!-- childclass="sub"：本 body 自己及嵌套 body 的元素默认用 sub 类，
+         但元素上显式写 class 时以显式值为准（见下方 cylinder）。 -->
+    <body childclass="sub">
+      <!-- 原代码：
+        <geom type="ellipsoid"/>
+        修正：三个半轴分别 0.1 / 0.05 / 0.02
+      -->
+      <geom type="ellipsoid" size="0.1 0.05 0.02"/>
+
+      <!-- 原代码：
+        <geom type="sphere" rgba="0 0 1 1"/>
+        修正：球只要 1 个半径；这里显式 rgba 覆盖了继承来的 sub 绿色
+      -->
+      <geom type="sphere" size="0.05" rgba="0 0 1 1"/>
+
+      <!-- 原代码：
+        <geom type="cylinder" class="main"/>
+        修正：圆柱要半径 + 半高；class="main" 覆盖 childclass="sub"，所以它是红色
+      -->
+      <geom type="cylinder" size="0.05 0.1" class="main"/>
+    </body>
+  </worldbody>
+
+  <!-- 执行器必须放在顶层 <actuator> 里，不能写进 <body>，否则 XML Schema 报
+       "Element name 'general' is invalid"。
+       actuator 的限制属性是 ctrllimited / ctrlrange；
+       limited / range 是 joint 的属性，两者不要混用。 -->
+  <actuator>
+    <general name="slider" class="main" joint="slide" ctrllimited="true" ctrlrange="-0.1 0.1"/>
+  </actuator>
+
+  <!-- 本文件有一个 slide 关节和一个 general 执行器，因此 nq=1 / nv=1 / nu=1：
+        带关节的 box 由 ctrl 驱动沿 x 滑动；它和原点处的静态 box 完全重叠，
+        所以一启动就会产生很强的接触力（静态几何体之间则不会互相碰撞）。 -->
+</mujoco>

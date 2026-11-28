@@ -1,28 +1,30 @@
 <!--第一个mujoco模型-->
-<mujoco model="hello_world">
+<mujoco model="hello_world"
+ xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+ xsi:noNamespaceSchemaLocation="https://raw.githubusercontent.com/google-deepmind/mujoco/refs/heads/main/src/xml/generated/mjcf.xsd">
 
-<asset>
-<!-- 纹理 -->
-<texture name="my_texture" type="2d" builtin="checker" rgb1="0 0 0" rgb2="1.5 1.5 1.5" width="10" height="10"/>
-<!-- 材料 -->
-<material name="my_material" texture="my_texture" reflectance="0.2" texuniform="true" texrepeat="5 5"/>
-<!-- reflectance表示反射，texuniform表示均匀分布，texrepeat表示分布间隔 -->
+ <asset>
+  <!-- 纹理 -->
+  <texture name="my_texture" type="2d" builtin="checker" rgb1="0 0 0" rgb2="1.5 1.5 1.5" width="10" height="10"/>
+  <!-- 材料 -->
+  <material name="my_material" texture="my_texture" reflectance="0.2" texuniform="true" texrepeat="5 5"/>
+  <!-- reflectance表示反射，texuniform表示均匀分布，texrepeat表示分布间隔 -->
 
-</asset>
+ </asset>
 
  <worldbody>
-<!-- 灯光 -->
+  <!-- 灯光 -->
   <light directional="true" pos="-1 0 1"/>
   <!-- 地面 -->
   <geom type="plane" size="10 10 0.1" rgba="1 1 1 10" material="my_material"/>
 
-<!-- 位置的判断：根据父级，父级是世界坐标系，则该物体的坐标是绝对位置（世界坐标），如果父级是另一个物体，则物体的世界坐标为：相对坐标+父级相对坐标+父级的父级的相对坐标+.... -->
+  <!-- 位置的判断：根据父级，父级是世界坐标系，则该物体的坐标是绝对位置（世界坐标），如果父级是另一个物体，则物体的世界坐标为：相对坐标+父级相对坐标+父级的父级的相对坐标+.... -->
   <body pos="0 0 1">
    <!-- <joint type="free"/> -->
    <geom type="box" size="0.1 5 1" rgba=".7 .7 .7 1"/>
   </body>
 
-<body pos="2 0 1">
+  <body pos="2 0 1">
    <!-- <joint type="free"/> -->
    <geom type="box" size="0.1 5 1" rgba=".7 .7 .7 1"/>
   </body>

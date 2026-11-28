@@ -1,0 +1,1241 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>tutorial-01-MJCF with UR5e</title>
+<style>
+html { scroll-behavior: smooth; }
+[id] { scroll-margin-top: 16px; }
+body {
+  margin: 0;
+  padding-left: 304px;
+  color: #1b1b1b;
+  background: #fff;
+  font-family: sans-serif;
+  line-height: 1.7;
+}
+.toc {
+  position:fixed;
+  left:0;
+  top: 0;
+  bottom: 0;
+  width: 280px;
+  overflow-y: auto;
+  box-sizing: border-box;
+  padding: 20px 14px 32px;
+  background: #f4f4f4;
+  border-right: 1px solid #d0d0d0;
+}
+.toc a {
+  display: block;
+  margin: 2px 0;
+  padding: 6px 8px;
+  color: #1b1b1b;
+  text-decoration: none;
+  line-height: 1.45;
+  border-radius: 4px;
+}
+.toc a:hover { background: #e6e6e6; }
+.toc a.active {
+  background: #fff;
+  font-weight: 600;
+}
+main {
+  margin: 0 auto;
+  max-width: 1040px;
+  padding: 40px 48px;
+}
+table { border-collapse: collapse; margin: 1em 0; }
+th, td {
+  border: 1px solid #ccc;
+  padding: 6px 10px;
+  vertical-align: top;
+}
+pre {
+  background: #f6f8fa;
+  overflow-x: auto;
+  padding: 12px 16px;
+}
+code { font-family: ui-monospace, monospace; }
+blockquote {
+  margin: 1em 0;
+  padding: 0.1em 1em;
+  border-left: 4px solid #c5c5c5;
+}
+ul.task-list, ul.task-list li { list-style: none; }
+ul.task-list { padding-left: 0; }
+@media (max-width: 900px) {
+  .toc { display: none; }
+  body { padding-left:0; }
+}
+</style>
+</head>
+<body>
+<nav class="toc">
+<a href="#sec-chain">MJCF 的执行链</a>
+<a href="#sec-scene-include">逐层读 scene.xml 与 ur5e.xml</a>
+<a href="#sec-default-class">default class 继承</a>
+<a href="#sec-body-joint">body/joint 树</a>
+<a href="#sec-actuator-pd">执行器是 PD 位置伺服</a>
+<a href="#sec-numeric-contract">数值契约表</a>
+<a href="#sec-mjcf-vs-urdf">MJCF 与 URDF 的对应关系</a>
+<a href="#sec-joint-limits">限位差异表</a>
+<a href="#sec-minimal-experiments">三个最小实验</a>
+<a href="#sec-pitfalls">常见坑</a>
+<a href="#sec-next-steps">下一步</a>
+</nav>
+<main>
+<p>本教程用本仓库的 UR5e 说明 MJCF（MuJoCo XML
+模型格式）编译进运行时之后的结构。实例是
+<code>model/universal_robots_ur5e/scene.xml</code> 以及它引入的
+<code>model/universal_robots_ur5e/ur5e.xml</code>，对照
+<code>model/ur5e.urdf</code> 和
+<code>MuJoCo_project.py</code>。下文的维度、力矩、位姿差都是用本环境
+MuJoCo 4.0.1（<code>README.md:15</code>）执行
+<code>MjModel.from_xml_path("model/universal_robots_ur5e/scene.xml")</code>
+后，从 <code>MjModel</code> / <code>MjData</code> 读出的。</p>
+<ul>
+<li><a href="#sec-chain">MJCF 的执行链</a></li>
+<li><a href="#sec-scene-include">逐层读 scene.xml 与 ur5e.xml</a></li>
+<li><a href="#sec-default-class">default class 继承</a></li>
+<li><a href="#sec-body-joint">body/joint 树</a></li>
+<li><a href="#sec-actuator-pd">执行器是 PD 位置伺服</a></li>
+<li><a href="#sec-numeric-contract">数值契约表</a></li>
+<li><a href="#sec-mjcf-vs-urdf">MJCF 与 URDF 的对应关系</a></li>
+<li><a href="#sec-joint-limits">限位差异表</a></li>
+<li><a href="#sec-minimal-experiments">三个最小实验</a></li>
+<li><a href="#sec-pitfalls">常见坑</a></li>
+<li><a href="#sec-next-steps">下一步</a></li>
+</ul>
+<p><a id="sec-chain"></a></p>
+<h2 id="mjcf-的执行链">MJCF 的执行链</h2>
+<p>文件经 <code>mujoco.MjModel.from_xml_path</code> 编译成
+<code>MjModel</code>（模型常量：身体、关节、执行器参数、时间步长）。<code>MjData</code>
+是状态：广义坐标 <code>qpos</code>、广义速度
+<code>qvel</code>、执行器输入
+<code>ctrl</code>，以及由它们算出的派生量。本仓库的加载入口是
+<code>MuJoCo_project.py:29-30</code>。</p>
+<pre class="python"><code>import mujoco
+
+model = mujoco.MjModel.from_xml_path(&quot;model/universal_robots_ur5e/scene.xml&quot;)
+data = mujoco.MjData(model)
+
+mujoco.mj_forward(model, data)  # 填派生量，不推进时间
+mujoco.mj_step(model, data)     # 推进一个 model.opt.timestep</code></pre>
+<p><code>mj_forward</code> 与 <code>mj_step</code> 的分工，以本环境
+4.0.1 的文档字符串和一次加载为准。<code>mj_forward</code> 的文档字符串是
+“Forward dynamics: same as mj_step but do not integrate in time.”
+<code>mj_step</code> 的文档字符串是 “Advance simulation ...”。实测：</p>
+<ul>
+<li>刚构造的 <code>MjData</code> 里 <code>data.site_xpos</code> 是 0。把
+<code>qpos</code> 写成 home 关键帧之后、调用 <code>mj_forward</code>
+之前，<code>site_xpos</code> 仍是 0。<code>mj_forward</code> 之后
+<code>data.time</code> 仍是 0，<code>qpos</code> / <code>qvel</code>
+不变，<code>site_xpos</code>
+变成该关节角对应的位置。<code>MuJoCo_project.py:316</code> 和
+<code>:481</code> 在写完 <code>qpos</code> 后立刻
+<code>mj_forward</code>，就是为了让随后读取的
+<code>data.site_xpos</code>（<code>:364</code>、<code>:510</code>）对应该关节角。</li>
+<li><code>mj_step</code> 把 <code>data.time</code> 从 0 推进到
+<code>model.opt.timestep</code>（本模型是 0.002），并更新
+<code>qpos</code>、<code>qvel</code>。仿真循环里的调用点是
+<code>MuJoCo_project.py:38</code>。</li>
+</ul>
+<p>派生量里本仓库直接用到的是运动学位置 <code>data.site_xpos</code> /
+<code>data.xpos</code>，以及执行器输出
+<code>data.actuator_force</code>（gear 为 1 时与
+<code>data.qfrc_actuator</code> 逐元素相同）。<code>mj_forward</code>
+负责把这些量从当前状态算出来；<code>mj_step</code>
+在此之外还把状态推进一个时间步。</p>
+<p><a id="sec-scene-include"></a></p>
+<h2 id="逐层读-scenexml-与-ur5exml">逐层读 scene.xml 与 ur5e.xml</h2>
+<p><strong>model/universal_robots_ur5e/scene.xml:1-38</strong></p>
+<pre class="xml"><code>   1 │ &lt;mujoco model=&quot;ur5e scene&quot;&gt;
+   2 │   &lt;include file=&quot;ur5e.xml&quot;/&gt;
+   3 │
+   4 │   &lt;statistic center=&quot;0.3 0 0.4&quot; extent=&quot;0.8&quot;/&gt;
+   5 │
+   6 │   &lt;visual&gt;
+   7 │     &lt;headlight diffuse=&quot;0.6 0.6 0.6&quot; ambient=&quot;0.1 0.1 0.1&quot; specular=&quot;0 0 0&quot;/&gt;
+   8 │     &lt;rgba haze=&quot;0.15 0.25 0.35 1&quot;/&gt;
+   9 │     &lt;global azimuth=&quot;120&quot; elevation=&quot;-20&quot;/&gt;
+  10 │   &lt;/visual&gt;
+  11 │
+  12 │   &lt;asset&gt;
+  13 │     &lt;texture type=&quot;skybox&quot; builtin=&quot;gradient&quot; rgb1=&quot;0.3 0.5 0.7&quot; rgb2=&quot;0 0 0&quot; width=&quot;512&quot; height=&quot;3072&quot;/&gt;
+  14 │     &lt;texture type=&quot;2d&quot; name=&quot;groundplane&quot; builtin=&quot;checker&quot; mark=&quot;edge&quot; rgb1=&quot;0.2 0.3 0.4&quot; rgb2=&quot;0.1 0.2 0.3&quot;
+  15 │       markrgb=&quot;0.8 0.8 0.8&quot; width=&quot;300&quot; height=&quot;300&quot;/&gt;
+  16 │     &lt;material name=&quot;groundplane&quot; texture=&quot;groundplane&quot; texuniform=&quot;true&quot; texrepeat=&quot;5 5&quot; reflectance=&quot;0.2&quot;/&gt;
+  17 │   &lt;/asset&gt;
+  18 │
+  19 │   &lt;worldbody&gt;
+  20 │     &lt;light pos=&quot;0 0 1.5&quot; dir=&quot;0 0 -1&quot; directional=&quot;true&quot;/&gt;
+  21 │     &lt;!--&lt;geom
+  22 │     name=&quot;ball1&quot; type=&quot;sphere&quot; size=&quot;0.03&quot; pos=&quot;0.30 0.30 0.30&quot; rgba=&quot;1 0 0 1&quot;/&gt;--&gt;
+  23 │     &lt;geom name=&quot;floor&quot; size=&quot;0 0 0.05&quot; type=&quot;plane&quot; material=&quot;groundplane&quot;/&gt;
+  24 │     &lt;body name=&quot;world_frame&quot; pos=&quot;0 0 0&quot;&gt;
+  25 │       &lt;geom name=&quot;X&quot; type=&quot;cylinder&quot; size=&quot;0.005&quot; fromto=&quot;0 0 0 0.3 0 0&quot; rgba=&quot;1 0 0 1&quot; contype=&quot;0&quot;
+  26 │         conaffinity=&quot;0&quot;/&gt;
+  27 │       &lt;geom name=&quot;Y&quot; type=&quot;cylinder&quot; size=&quot;0.005&quot; fromto=&quot;0 0 0 0 0.3 0&quot; rgba=&quot;0 1 0 1&quot; contype=&quot;0&quot;
+  28 │         conaffinity=&quot;0&quot;/&gt;
+  29 │       &lt;geom name=&quot;Z&quot; type=&quot;cylinder&quot; size=&quot;0.005&quot; fromto=&quot;0 0 0 0 0 0.3&quot; rgba=&quot;0 0 1 1&quot; contype=&quot;0&quot;
+  30 │         conaffinity=&quot;0&quot;/&gt;
+  31 │     &lt;/body&gt;
+  32 │
+  33 │     &lt;body name=&quot;target&quot; pos=&quot;-0.13 0.5 0.1&quot;&gt;
+  34 │       &lt;geom size=&quot;0.02&quot; rgba=&quot;0 1 0 0.5&quot; contype=&quot;0&quot; conaffinity=&quot;0&quot;/&gt;
+  35 │     &lt;/body&gt;
+  36 │
+  37 │   &lt;/worldbody&gt;
+  38 │ &lt;/mujoco&gt;</code></pre>
+<h3 id="include-的路径">include 的路径</h3>
+<p><code>scene.xml:2</code> 是
+<code>&lt;include file="ur5e.xml"/&gt;</code>。这条相对路径相对于写出
+include 的文件所在目录，也就是
+<code>model/universal_robots_ur5e/ur5e.xml</code>，与进程的当前工作目录无关。在
+<code>/tmp</code> 下用绝对路径加载 <code>scene.xml</code>，仍然得到
+<code>nq=6</code>、<code>nmesh=20</code>。</p>
+<p>传给 <code>from_xml_path</code>
+的字符串是普通文件系统路径。当前工作目录不在仓库根时，相对路径
+<code>model/universal_robots_ur5e/scene.xml</code> 会打不开。include
+与这个参数不是同一条规则。</p>
+<p><code>compiler meshdir="assets"</code>（<code>ur5e.xml:3</code>）相对于传给
+<code>from_xml_path</code>
+的顶层文件所在目录，不相对于当前工作目录。本仓库的顶层文件是
+<code>scene.xml</code>，与 <code>ur5e.xml</code> 同目录，因此 20 个
+obj（<code>ur5e.xml:40-59</code>，加载后 <code>nmesh=20</code>）来自
+<code>model/universal_robots_ur5e/assets/</code>。把
+<code>ur5e.xml</code> 以绝对路径 include
+进另一个目录中的顶层文件时，若该顶层目录下没有
+<code>assets/</code>，编译找不到网格：<code>meshdir</code> 不会改走被
+include 文件的真实目录。</p>
+<h3 id="compiler">compiler</h3>
+<p><code>ur5e.xml:3</code> 三项一起生效：</p>
+<ul>
+<li><code>angle="radian"</code>：本文件里的
+<code>range</code>、<code>ctrlrange</code> 按弧度读入。加载后
+<code>shoulder_pan_joint</code> 的 <code>jnt_range</code> 是
+±6.28319，与 XML 字面相同。若把 6.28319 当成度再换算，大约只有 0.110
+rad，与加载结果对不上。</li>
+<li><code>meshdir="assets"</code>：见上一节。</li>
+<li><code>autolimits="true"</code>：关节只写了
+<code>range</code>，没有写 <code>limited</code>。加载后 6 个关节的
+<code>jnt_limited</code> 都是 1，<code>range</code> 是生效限位。把同一份
+XML 的 <code>autolimits</code> 改成 <code>false</code> 后，编译在
+<code>shoulder_pan_joint</code>（<code>ur5e.xml:70</code>）失败，错误是
+<code>joint has range but not limited</code>。</li>
+</ul>
+<h3 id="option-与场景外观">option 与场景外观</h3>
+<p><code>ur5e.xml:4</code> 的 <code>&lt;option&gt;</code> 只写了
+<code>integrator="implicitfast"</code>。加载后
+<code>model.opt.integrator</code> 是枚举
+<code>mjINT_IMPLICITFAST</code>（整型值 3）。同一枚举里 Euler 是
+<code>mjINT_EULER</code>（0）。文件没有写
+<code>timestep</code>，加载值是 0.002。文件也没有写
+<code>gravity</code>，加载值是 <code>[0, 0, -9.81]</code>。</p>
+<p>下面三块不进入广义坐标：</p>
+<ul>
+<li><code>&lt;statistic center="0.3 0 0.4" extent="0.8"/&gt;</code>（<code>scene.xml:4</code>）写入
+<code>model.stat</code>，给自由相机取景。实测
+<code>center=[0.3, 0, 0.4]</code>，<code>extent=0.8</code>。</li>
+<li><code>&lt;visual&gt;</code>（<code>scene.xml:6-10</code>）是头灯、雾色和默认视角。实测
+<code>azimuth=120</code>，<code>elevation=-20</code>，头灯 diffuse 是
+<code>[0.6, 0.6, 0.6]</code>。</li>
+<li><code>&lt;asset&gt;</code> 在 <code>scene.xml:12-17</code>
+是天空盒和地面棋盘纹理，在 <code>ur5e.xml:34-59</code>
+是材质与网格。地面几何体是 <code>scene.xml:23</code> 的
+<code>floor</code>，使用材质 <code>groundplane</code>；它的
+<code>contype=1</code>、<code>conaffinity=1</code>，参与接触。</li>
+</ul>
+<p><code>scene.xml</code> 的 <code>&lt;worldbody&gt;</code>
+在机器人之外加了 <code>floor</code>、坐标轴
+<code>world_frame</code>（<code>scene.xml:24-31</code>）和绿球
+<code>target</code>（<code>scene.xml:33-35</code>）。身体计数见「数值契约表」。</p>
+<p><a id="sec-default-class"></a></p>
+<h2 id="default-class-继承">default class 继承</h2>
+<p><strong>model/universal_robots_ur5e/ur5e.xml:6-32</strong></p>
+<pre class="xml"><code>   6 │   &lt;default&gt;
+   7 │     &lt;default class=&quot;ur5e&quot;&gt;
+   8 │       &lt;material specular=&quot;0.5&quot; shininess=&quot;0.25&quot;/&gt;
+   9 │       &lt;joint axis=&quot;0 1 0&quot; range=&quot;-6.28319 6.28319&quot; armature=&quot;0.1&quot;/&gt;
+  10 │       &lt;general gaintype=&quot;fixed&quot; biastype=&quot;affine&quot; ctrlrange=&quot;-6.2831 6.2831&quot; gainprm=&quot;2000&quot; biasprm=&quot;0 -2000 -400&quot;
+  11 │         forcerange=&quot;-150 150&quot;/&gt;
+  12 │       &lt;default class=&quot;size3&quot;&gt;
+  13 │         &lt;default class=&quot;size3_limited&quot;&gt;
+  14 │           &lt;joint range=&quot;-3.1415 3.1415&quot;/&gt;
+  15 │           &lt;general ctrlrange=&quot;-3.1415 3.1415&quot;/&gt;
+  16 │         &lt;/default&gt;
+  17 │       &lt;/default&gt;
+  18 │       &lt;default class=&quot;size1&quot;&gt;
+  19 │         &lt;general gainprm=&quot;500&quot; biasprm=&quot;0 -500 -100&quot; forcerange=&quot;-28 28&quot;/&gt;
+  20 │       &lt;/default&gt;
+  21 │       &lt;default class=&quot;visual&quot;&gt;
+  22 │         &lt;geom type=&quot;mesh&quot; contype=&quot;0&quot; conaffinity=&quot;0&quot; group=&quot;2&quot;/&gt;
+  23 │       &lt;/default&gt;
+  24 │       &lt;default class=&quot;collision&quot;&gt;
+  25 │         &lt;geom type=&quot;capsule&quot; group=&quot;3&quot;/&gt;
+  26 │         &lt;default class=&quot;eef_collision&quot;&gt;
+  27 │           &lt;geom type=&quot;cylinder&quot;/&gt;
+  28 │         &lt;/default&gt;
+  29 │       &lt;/default&gt;
+  30 │       &lt;site size=&quot;0.001&quot; rgba=&quot;0.5 0.5 0.5 0.3&quot; group=&quot;4&quot;/&gt;
+  31 │     &lt;/default&gt;
+  32 │   &lt;/default&gt;</code></pre>
+<p>默认类（default class）嵌套继承：子 class 继承父 class
+已写的属性，同名属性用更近的一层覆盖。元素上的 <code>class="..."</code>
+选用那一层；元素自己再写的属性覆盖 class。<code>base</code> 上的
+<code>childclass="ur5e"</code>（<code>ur5e.xml:64</code>）让未指定 class
+的子元素进入这棵树。</p>
+<p>定义在
+<code>ur5e.xml:7-29</code>。<code>size3</code>（<code>:12-17</code>）自身没有新属性，只为了再嵌出
+<code>size3_limited</code>。下表的执行器列是加载后的
+<code>actuator_gainprm[:,0]</code>、<code>actuator_biasprm</code>、<code>actuator_forcerange</code>、<code>actuator_ctrlrange</code>；关节列是
+<code>jnt_range</code>；geom 列是对应几何体的 <code>geom_group</code> /
+<code>geom_contype</code> /
+<code>geom_conaffinity</code>。<code>visual</code> 的接触标志写在 XML
+里；<code>collision</code> 的 class 没有写 <code>contype</code> /
+<code>conaffinity</code>，表中 1/1 是加载值（例如
+<code>shoulder_link</code> 上 <code>ur5e.xml:74</code> 那颗胶囊）。</p>
+<table>
+<thead>
+<tr>
+<th>class</th>
+<th>父 class</th>
+<th>用在</th>
+<th>gainprm</th>
+<th>biasprm</th>
+<th>forcerange</th>
+<th>joint range</th>
+<th>ctrlrange</th>
+<th>group</th>
+<th>contype / conaffinity</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>ur5e</code></td>
+<td>—</td>
+<td>下面各层的父默认</td>
+<td>2000</td>
+<td><code>0 -2000 -400</code></td>
+<td>±150</td>
+<td>±6.28319</td>
+<td>±6.2831</td>
+<td>—</td>
+<td>—</td>
+</tr>
+<tr>
+<td><code>size3</code></td>
+<td><code>ur5e</code></td>
+<td><code>shoulder_pan</code>、<code>shoulder_lift</code> 的 joint 与
+actuator</td>
+<td>2000</td>
+<td><code>0 -2000 -400</code></td>
+<td>±150</td>
+<td>±6.28319</td>
+<td>±6.2831</td>
+<td>—</td>
+<td>—</td>
+</tr>
+<tr>
+<td><code>size3_limited</code></td>
+<td><code>size3</code></td>
+<td><code>elbow</code> 的 joint 与 actuator</td>
+<td>2000</td>
+<td><code>0 -2000 -400</code></td>
+<td>±150</td>
+<td>±3.1415</td>
+<td>±3.1415</td>
+<td>—</td>
+<td>—</td>
+</tr>
+<tr>
+<td><code>size1</code></td>
+<td><code>ur5e</code></td>
+<td>三个 wrist 的 joint 与 actuator</td>
+<td>500</td>
+<td><code>0 -500 -100</code></td>
+<td>±28</td>
+<td>±6.28319</td>
+<td>±6.2831</td>
+<td>—</td>
+<td>—</td>
+</tr>
+<tr>
+<td><code>visual</code></td>
+<td><code>ur5e</code></td>
+<td>各 link 的 mesh geom</td>
+<td>—</td>
+<td>—</td>
+<td>—</td>
+<td>—</td>
+<td>—</td>
+<td>2</td>
+<td>0 / 0</td>
+</tr>
+<tr>
+<td><code>collision</code></td>
+<td><code>ur5e</code></td>
+<td>各 link 的胶囊 geom</td>
+<td>—</td>
+<td>—</td>
+<td>—</td>
+<td>—</td>
+<td>—</td>
+<td>3</td>
+<td>1 / 1（加载值）</td>
+</tr>
+</tbody>
+</table>
+<p><code>size3_limited</code> 只收紧 <code>joint range</code> 和
+<code>ctrlrange</code>（<code>ur5e.xml:14-15</code>），增益和
+<code>forcerange</code> 仍是父层的 2000 与
+±150。<code>size1</code>（<code>:18-20</code>）改的是增益、偏置和
+<code>forcerange</code>，关节范围和 <code>ctrlrange</code> 仍是
+<code>ur5e</code> 的 ±6.28319 与 ±6.2831。关节范围与
+<code>ctrlrange</code> 不是同一个字面量：前者 6.28319，后者 6.2831。</p>
+<p><code>collision</code> 里面还嵌了
+<code>eef_collision</code>（<code>ur5e.xml:26-28</code>），把几何类型改成圆柱，接触标志和
+group 3 仍从 <code>collision</code> 继承。<code>wrist_3_link</code>
+的末端碰撞体用的是这个 class（<code>ur5e.xml:113</code>）。加载后它是
+<code>group=3</code>、<code>contype=1</code>、<code>conaffinity=1</code>
+的 cylinder。</p>
+<p>两套 geom 的分工：</p>
+<ul>
+<li><code>visual</code>（<code>ur5e.xml:21-23</code>）是网格，<code>contype=0</code>
+且
+<code>conaffinity=0</code>，不参与接触，<code>group=2</code>。模型说明里这组碰撞体外形是手工简化过的（<code>model/universal_robots_ur5e/README.md:36</code>），网格只负责外观。</li>
+<li><code>collision</code>
+是胶囊（末端那一个是圆柱），<code>contype=1</code>、<code>conaffinity=1</code>，与
+<code>floor</code> 发生接触，<code>group=3</code>。</li>
+<li>本环境新建 <code>mujoco.MjvOption()</code> 时 <code>geomgroup</code>
+是 <code>[1, 1, 1, 0, 0, 0]</code>，group 0–2 打开、group 3
+关闭。查看器保持这个默认时，窗口里是 mesh，胶囊要打开 group 3
+才画出来。</li>
+</ul>
+<p><code>scene.xml:25-34</code> 的坐标轴和绿球也写了
+<code>contype="0"</code>、<code>conaffinity="0"</code>，它们是标注，不参与接触；group
+为默认 0，所以窗口里看得见。</p>
+<p><a id="sec-body-joint"></a></p>
+<h2 id="bodyjoint-树">body/joint 树</h2>
+<p><strong>model/universal_robots_ur5e/ur5e.xml:62-123</strong></p>
+<pre class="xml"><code>  62 │   &lt;worldbody&gt;
+  63 │     &lt;light name=&quot;spotlight&quot; mode=&quot;targetbodycom&quot; target=&quot;wrist_2_link&quot; pos=&quot;0 -1 2&quot;/&gt;
+  64 │     &lt;body name=&quot;base&quot; quat=&quot;1 0 0 0&quot; childclass=&quot;ur5e&quot;&gt;
+  65 │       &lt;inertial mass=&quot;4.0&quot; pos=&quot;0 0 0&quot; diaginertia=&quot;0.00443333156 0.00443333156 0.0072&quot;/&gt;
+  66 │       &lt;geom mesh=&quot;base_0&quot; material=&quot;black&quot; class=&quot;visual&quot;/&gt;
+  67 │       &lt;geom mesh=&quot;base_1&quot; material=&quot;jointgray&quot; class=&quot;visual&quot;/&gt;
+  68 │       &lt;body name=&quot;shoulder_link&quot; pos=&quot;0 0 0.163&quot;&gt;
+  69 │         &lt;inertial mass=&quot;3.7&quot; pos=&quot;0 0 0&quot; diaginertia=&quot;0.0102675 0.0102675 0.00666&quot;/&gt;
+  70 │         &lt;joint name=&quot;shoulder_pan_joint&quot; class=&quot;size3&quot; axis=&quot;0 0 1&quot;/&gt;
+  71 │         &lt;geom mesh=&quot;shoulder_0&quot; material=&quot;urblue&quot; class=&quot;visual&quot;/&gt;
+  72 │         &lt;geom mesh=&quot;shoulder_1&quot; material=&quot;black&quot; class=&quot;visual&quot;/&gt;
+  73 │         &lt;geom mesh=&quot;shoulder_2&quot; material=&quot;jointgray&quot; class=&quot;visual&quot;/&gt;
+  74 │         &lt;geom class=&quot;collision&quot; size=&quot;0.06 0.06&quot; pos=&quot;0 0 -0.04&quot;/&gt;
+  75 │         &lt;body name=&quot;upper_arm_link&quot; pos=&quot;0 0.138 0&quot; quat=&quot;1 0 1 0&quot;&gt;
+  76 │           &lt;inertial mass=&quot;8.393&quot; pos=&quot;0 0 0.2125&quot; diaginertia=&quot;0.133886 0.133886 0.0151074&quot;/&gt;
+  77 │           &lt;joint name=&quot;shoulder_lift_joint&quot; class=&quot;size3&quot;/&gt;
+  78 │           &lt;geom mesh=&quot;upperarm_0&quot; material=&quot;linkgray&quot; class=&quot;visual&quot;/&gt;
+  79 │           &lt;geom mesh=&quot;upperarm_1&quot; material=&quot;black&quot; class=&quot;visual&quot;/&gt;
+  80 │           &lt;geom mesh=&quot;upperarm_2&quot; material=&quot;jointgray&quot; class=&quot;visual&quot;/&gt;
+  81 │           &lt;geom mesh=&quot;upperarm_3&quot; material=&quot;urblue&quot; class=&quot;visual&quot;/&gt;
+  82 │           &lt;geom class=&quot;collision&quot; pos=&quot;0 -0.04 0&quot; quat=&quot;1 1 0 0&quot; size=&quot;0.06 0.06&quot;/&gt;
+  83 │           &lt;geom class=&quot;collision&quot; size=&quot;0.05 0.2&quot; pos=&quot;0 0 0.2&quot;/&gt;
+  84 │           &lt;body name=&quot;forearm_link&quot; pos=&quot;0 -0.131 0.425&quot;&gt;
+  85 │             &lt;inertial mass=&quot;2.275&quot; pos=&quot;0 0 0.196&quot; diaginertia=&quot;0.0311796 0.0311796 0.004095&quot;/&gt;
+  86 │             &lt;joint name=&quot;elbow_joint&quot; class=&quot;size3_limited&quot;/&gt;
+  87 │             &lt;geom mesh=&quot;forearm_0&quot; material=&quot;urblue&quot; class=&quot;visual&quot;/&gt;
+  88 │             &lt;geom mesh=&quot;forearm_1&quot; material=&quot;linkgray&quot; class=&quot;visual&quot;/&gt;
+  89 │             &lt;geom mesh=&quot;forearm_2&quot; material=&quot;black&quot; class=&quot;visual&quot;/&gt;
+  90 │             &lt;geom mesh=&quot;forearm_3&quot; material=&quot;jointgray&quot; class=&quot;visual&quot;/&gt;
+  91 │             &lt;geom class=&quot;collision&quot; pos=&quot;0 0.08 0&quot; quat=&quot;1 1 0 0&quot; size=&quot;0.055 0.06&quot;/&gt;
+  92 │             &lt;geom class=&quot;collision&quot; size=&quot;0.038 0.19&quot; pos=&quot;0 0 0.2&quot;/&gt;
+  93 │             &lt;body name=&quot;wrist_1_link&quot; pos=&quot;0 0 0.392&quot; quat=&quot;1 0 1 0&quot;&gt;
+  94 │               &lt;inertial mass=&quot;1.219&quot; pos=&quot;0 0.127 0&quot; diaginertia=&quot;0.0025599 0.0025599 0.0021942&quot;/&gt;
+  95 │               &lt;joint name=&quot;wrist_1_joint&quot; class=&quot;size1&quot;/&gt;
+  96 │               &lt;geom mesh=&quot;wrist1_0&quot; material=&quot;black&quot; class=&quot;visual&quot;/&gt;
+  97 │               &lt;geom mesh=&quot;wrist1_1&quot; material=&quot;urblue&quot; class=&quot;visual&quot;/&gt;
+  98 │               &lt;geom mesh=&quot;wrist1_2&quot; material=&quot;jointgray&quot; class=&quot;visual&quot;/&gt;
+  99 │               &lt;geom class=&quot;collision&quot; pos=&quot;0 0.05 0&quot; quat=&quot;1 1 0 0&quot; size=&quot;0.04 0.07&quot;/&gt;
+ 100 │               &lt;body name=&quot;wrist_2_link&quot; pos=&quot;0 0.127 0&quot;&gt;
+ 101 │                 &lt;inertial mass=&quot;1.219&quot; pos=&quot;0 0 0.1&quot; diaginertia=&quot;0.0025599 0.0025599 0.0021942&quot;/&gt;
+ 102 │                 &lt;joint name=&quot;wrist_2_joint&quot; axis=&quot;0 0 1&quot; class=&quot;size1&quot;/&gt;
+ 103 │                 &lt;geom mesh=&quot;wrist2_0&quot; material=&quot;black&quot; class=&quot;visual&quot;/&gt;
+ 104 │                 &lt;geom mesh=&quot;wrist2_1&quot; material=&quot;urblue&quot; class=&quot;visual&quot;/&gt;
+ 105 │                 &lt;geom mesh=&quot;wrist2_2&quot; material=&quot;jointgray&quot; class=&quot;visual&quot;/&gt;
+ 106 │                 &lt;geom class=&quot;collision&quot; size=&quot;0.04 0.06&quot; pos=&quot;0 0 0.04&quot;/&gt;
+ 107 │                 &lt;geom class=&quot;collision&quot; pos=&quot;0 0.02 0.1&quot; quat=&quot;1 1 0 0&quot; size=&quot;0.04 0.04&quot;/&gt;
+ 108 │                 &lt;body name=&quot;wrist_3_link&quot; pos=&quot;0 0 0.1&quot;&gt;
+ 109 │                   &lt;inertial mass=&quot;0.1889&quot; pos=&quot;0 0.0771683 0&quot; quat=&quot;1 0 0 1&quot;
+ 110 │                     diaginertia=&quot;0.000132134 9.90863e-05 9.90863e-05&quot;/&gt;
+ 111 │                   &lt;joint name=&quot;wrist_3_joint&quot; class=&quot;size1&quot;/&gt;
+ 112 │                   &lt;geom material=&quot;linkgray&quot; mesh=&quot;wrist3&quot; class=&quot;visual&quot;/&gt;
+ 113 │                   &lt;geom class=&quot;eef_collision&quot; pos=&quot;0 0.08 0&quot; quat=&quot;1 1 0 0&quot; size=&quot;0.04 0.02&quot;/&gt;
+ 114 │                   &lt;site name=&quot;attachment_site&quot; pos=&quot;0 0.1 0&quot; quat=&quot;-1 1 0 0&quot;/&gt;
+ 115 │                 &lt;/body&gt;
+ 116 │               &lt;/body&gt;
+ 117 │             &lt;/body&gt;
+ 118 │           &lt;/body&gt;
+ 119 │         &lt;/body&gt;
+ 120 │       &lt;/body&gt;
+ 121 │     &lt;/body&gt;
+ 122 │   &lt;/worldbody&gt;
+ 123 │</code></pre>
+<p><code>pos</code> 和 <code>quat</code>（四元数，MuJoCo 顺序 w x y
+z）是父 body 坐标系里、关节角为 0 时的子 body 位姿。世界位姿由 world
+沿父链把这些相对位姿连乘得到。铰链转角叠在这个参考位姿上；<code>qpos=0</code>
+时铰链是单位旋转，此时 <code>data.xpos</code> 只由 <code>pos</code> /
+<code>quat</code> 的连乘决定。下面每级都给出 XML
+里的父级相对量。<code>qpos=0</code> 且 <code>mj_forward</code>
+之后的世界坐标是加载值。</p>
+<p><code>base</code>（<code>ur5e.xml:64</code>）的父级是
+<code>world</code>，位置在原点，<code>quat="1 0 0 0"</code>。它没有
+joint，加载后
+<code>body_jntnum=0</code>，因此固连在世界上，不是自由刚体。</p>
+<p><code>shoulder_link</code>（<code>:68</code>）相对 <code>base</code>
+的 <code>pos="0 0 0.163"</code>，姿态为单位阵。<code>qpos=0</code>
+时世界坐标是 <code>[0, 0, 0.163]</code>。关节
+<code>shoulder_pan_joint</code>（<code>:70</code>）属于这个
+body，<code>class="size3"</code>，<code>axis="0 0 1"</code> 覆盖了
+<code>ur5e</code> 默认的
+<code>axis="0 1 0"</code>（<code>:9</code>）。</p>
+<p><code>upper_arm_link</code>（<code>:75</code>）相对
+<code>shoulder_link</code> 的
+<code>pos="0 0.138 0"</code>，<code>quat="1 0 1 0"</code>。该四元数不是单位长度，编译后归一化成
+<code>[0.7071067811865475, 0, 0.7071067811865475, 0]</code>，即绕父系 Y
+轴 +π/2。<code>qpos=0</code> 时世界坐标是
+<code>[0, 0.138, 0.163]</code>。关节
+<code>shoulder_lift_joint</code>（<code>:77</code>）<code>class="size3"</code>，轴用继承的
+<code>0 1 0</code>。</p>
+<p><code>forearm_link</code>（<code>:84</code>）相对
+<code>upper_arm_link</code> 的 <code>pos="0 -0.131 0.425"</code>，无
+<code>quat</code>。把这个矢量用父级的 Ry(+π/2)
+转到世界再加父级位置：Ry(+π/2) 作用后是
+<code>(0.425, -0.131, 0)</code>，加上 <code>(0, 0.138, 0.163)</code>
+得到 <code>(0.425, 0.007, 0.163)</code>。加载的
+<code>forearm_link</code> 的 <code>xpos</code> 就是
+<code>[0.425, 0.007, 0.163]</code>。关节
+<code>elbow_joint</code>（<code>:86</code>）<code>class="size3_limited"</code>，轴
+<code>0 1 0</code>。</p>
+<p><code>wrist_1_link</code>（<code>:93</code>）相对
+<code>forearm_link</code> 的
+<code>pos="0 0 0.392"</code>，<code>quat="1 0 1 0"</code>，编译后同样是绕
+Y 的 +π/2。关节
+<code>wrist_1_joint</code>（<code>:95</code>）<code>class="size1"</code>，轴
+<code>0 1 0</code>。</p>
+<p><code>wrist_2_link</code>（<code>:100</code>）相对
+<code>wrist_1_link</code> 的 <code>pos="0 0.127 0"</code>。关节
+<code>wrist_2_joint</code>（<code>:102</code>）<code>class="size1"</code>，<code>axis="0 0 1"</code>
+再次覆盖默认轴。</p>
+<p><code>wrist_3_link</code>（<code>:108</code>）相对
+<code>wrist_2_link</code> 的 <code>pos="0 0 0.1"</code>。关节
+<code>wrist_3_joint</code>（<code>:111</code>）<code>class="size1"</code>，轴
+<code>0 1 0</code>。<code>attachment_site</code>（<code>:114</code>）还在这个
+body
+里，<code>pos="0 0.1 0"</code>、<code>quat="-1 1 0 0"</code>，同样是相对
+<code>wrist_3_link</code>，不是世界坐标。<code>qpos=0</code>、<code>mj_forward</code>
+之后 <code>data.site_xpos</code> 是
+<code>[0.817, 0.234, 0.063]</code>；<code>mj_forward</code> 之前是
+0。</p>
+<p>六个关节都是铰链（<code>mjJNT_HINGE</code>），<code>jnt_limited=1</code>。<code>jnt_range</code>
+与上表 class 继承一致。</p>
+<table>
+<thead>
+<tr>
+<th>joint</th>
+<th>body</th>
+<th>axis</th>
+<th>jnt_range（加载值）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>shoulder_pan_joint</code></td>
+<td><code>shoulder_link</code></td>
+<td><code>0 0 1</code></td>
+<td>±6.28319</td>
+</tr>
+<tr>
+<td><code>shoulder_lift_joint</code></td>
+<td><code>upper_arm_link</code></td>
+<td><code>0 1 0</code></td>
+<td>±6.28319</td>
+</tr>
+<tr>
+<td><code>elbow_joint</code></td>
+<td><code>forearm_link</code></td>
+<td><code>0 1 0</code></td>
+<td>±3.1415</td>
+</tr>
+<tr>
+<td><code>wrist_1_joint</code></td>
+<td><code>wrist_1_link</code></td>
+<td><code>0 1 0</code></td>
+<td>±6.28319</td>
+</tr>
+<tr>
+<td><code>wrist_2_joint</code></td>
+<td><code>wrist_2_link</code></td>
+<td><code>0 0 1</code></td>
+<td>±6.28319</td>
+</tr>
+<tr>
+<td><code>wrist_3_joint</code></td>
+<td><code>wrist_3_link</code></td>
+<td><code>0 1 0</code></td>
+<td>±6.28319</td>
+</tr>
+</tbody>
+</table>
+<p><a id="sec-actuator-pd"></a></p>
+<h2 id="执行器是-pd-位置伺服">执行器是 PD 位置伺服</h2>
+<p><strong>model/universal_robots_ur5e/ur5e.xml:125-136</strong></p>
+<pre class="xml"><code> 125 │   &lt;actuator&gt;
+ 126 │     &lt;general class=&quot;size3&quot; name=&quot;shoulder_pan&quot; joint=&quot;shoulder_pan_joint&quot;/&gt;
+ 127 │     &lt;general class=&quot;size3&quot; name=&quot;shoulder_lift&quot; joint=&quot;shoulder_lift_joint&quot;/&gt;
+ 128 │     &lt;general class=&quot;size3_limited&quot; name=&quot;elbow&quot; joint=&quot;elbow_joint&quot;/&gt;
+ 129 │     &lt;general class=&quot;size1&quot; name=&quot;wrist_1&quot; joint=&quot;wrist_1_joint&quot;/&gt;
+ 130 │     &lt;general class=&quot;size1&quot; name=&quot;wrist_2&quot; joint=&quot;wrist_2_joint&quot;/&gt;
+ 131 │     &lt;general class=&quot;size1&quot; name=&quot;wrist_3&quot; joint=&quot;wrist_3_joint&quot;/&gt;
+ 132 │   &lt;/actuator&gt;
+ 133 │
+ 134 │   &lt;keyframe&gt;
+ 135 │     &lt;key name=&quot;home&quot; qpos=&quot;-1.5708 -1.5708 1.5708 -1.5708 -1.5708 0&quot; ctrl=&quot;-1.5708 -1.5708 1.5708 -1.5708 -1.5708 0&quot;/&gt;
+ 136 │   &lt;/keyframe&gt;</code></pre>
+<p><code>&lt;actuator&gt;</code>（<code>ur5e.xml:125-131</code>）里每个
+<code>&lt;general joint="..."&gt;</code> 直接驱动同名关节。加载后
+<code>actuator_trntype</code> 是
+<code>mjTRN_JOINT</code>，<code>actuator_gear</code> 的第一分量是
+1，<code>actuator_dyntype</code> 是
+<code>mjDYN_NONE</code>，<code>actuator_gaintype</code> 是
+<code>mjGAIN_FIXED</code>，<code>actuator_biastype</code> 是
+<code>mjBIAS_AFFINE</code>。没有执行器动力学，<code>ctrl</code>
+不经过滤波，直接进入下面的仿射式。传动长度就是关节角
+<code>q</code>，传动速度就是 <code>qdot</code>。</p>
+<p>固定增益、仿射偏置写成</p>
+<p><math display="block"><semantics><mrow><mi>τ</mi><mo>=</mo><msub><mi>p</mi><mrow><mrow><mi mathvariant="normal">g</mi><mi mathvariant="normal">a</mi><mi mathvariant="normal">i</mi><mi mathvariant="normal">n</mi></mrow><mo>,</mo><mn>0</mn></mrow></msub><mspace width="0.167em"></mspace><mrow><mi mathvariant="normal">c</mi><mi mathvariant="normal">t</mi><mi mathvariant="normal">r</mi><mi mathvariant="normal">l</mi></mrow><mo>+</mo><msub><mi>p</mi><mrow><mrow><mi mathvariant="normal">b</mi><mi mathvariant="normal">i</mi><mi mathvariant="normal">a</mi><mi mathvariant="normal">s</mi></mrow><mo>,</mo><mn>0</mn></mrow></msub><mo>+</mo><msub><mi>p</mi><mrow><mrow><mi mathvariant="normal">b</mi><mi mathvariant="normal">i</mi><mi mathvariant="normal">a</mi><mi mathvariant="normal">s</mi></mrow><mo>,</mo><mn>1</mn></mrow></msub><mspace width="0.167em"></mspace><mi>q</mi><mo>+</mo><msub><mi>p</mi><mrow><mrow><mi mathvariant="normal">b</mi><mi mathvariant="normal">i</mi><mi mathvariant="normal">a</mi><mi mathvariant="normal">s</mi></mrow><mo>,</mo><mn>2</mn></mrow></msub><mspace width="0.167em"></mspace><mover><mi>q</mi><mo accent="true">̇</mo></mover></mrow><annotation encoding="application/x-tex">
+\tau = p_{\mathrm{gain},0}\,\mathrm{ctrl} + p_{\mathrm{bias},0} + p_{\mathrm{bias},1}\, q + p_{\mathrm{bias},2}\, \dot{q}
+</annotation></semantics></math></p>
+<p><code>p_gain</code> 是 <code>gainprm</code>，<code>p_bias</code> 是
+<code>biasprm</code>。<code>ur5e</code> 的
+general（<code>ur5e.xml:10-11</code>）是
+<code>gainprm="2000"</code>、<code>biasprm="0 -2000 -400"</code>，于是
+<code>p_gain,0 = 2000</code>，<code>p_bias = (0, -2000, -400)</code>。代入得</p>
+<p><math display="block"><semantics><mrow><mi>τ</mi><mo>=</mo><msub><mi>K</mi><mi>p</mi></msub><mo stretchy="false" form="prefix">(</mo><mrow><mi mathvariant="normal">c</mi><mi mathvariant="normal">t</mi><mi mathvariant="normal">r</mi><mi mathvariant="normal">l</mi></mrow><mo>−</mo><mi>q</mi><mo stretchy="false" form="postfix">)</mo><mo>−</mo><msub><mi>K</mi><mi>d</mi></msub><mover><mi>q</mi><mo accent="true">̇</mo></mover></mrow><annotation encoding="application/x-tex">
+\tau = K_p (\mathrm{ctrl} - q) - K_d \dot{q}
+</annotation></semantics></math></p>
+<p>符号：</p>
+<ul>
+<li><math display="inline"><semantics><mi>τ</mi><annotation encoding="application/x-tex">\tau</annotation></semantics></math>：该执行器输出的关节力矩，读
+<code>data.actuator_force</code>。gear 为 1 时与
+<code>data.qfrc_actuator</code> 相同。实测在一组非零
+<code>q</code>、<code>qvel</code>、<code>ctrl</code>
+上，两者与上式截断后的值最大绝对误差是 0。</li>
+<li><math display="inline"><semantics><msub><mi>K</mi><mi>p</mi></msub><annotation encoding="application/x-tex">K_p</annotation></semantics></math>：位置增益，等于
+<code>gainprm[0]</code>，也等于 <code>-biasprm[1]</code>。前三个执行器是
+2000，三个腕是 500。</li>
+<li><math display="inline"><semantics><mrow><mi mathvariant="normal">c</mi><mi mathvariant="normal">t</mi><mi mathvariant="normal">r</mi><mi mathvariant="normal">l</mi></mrow><annotation encoding="application/x-tex">\mathrm{ctrl}</annotation></semantics></math>：<code>data.ctrl</code>
+的对应分量，位置设定点（setpoint），单位弧度。</li>
+<li><math display="inline"><semantics><mi>q</mi><annotation encoding="application/x-tex">q</annotation></semantics></math>：<code>data.qpos</code>
+的对应分量，当前关节角。</li>
+<li><math display="inline"><semantics><msub><mi>K</mi><mi>d</mi></msub><annotation encoding="application/x-tex">K_d</annotation></semantics></math>：速度增益，等于
+<code>-biasprm[2]</code>。前三个是 400（来自 <code>-400</code>），腕是
+100（来自 <code>biasprm="0 -500 -100"</code>）。</li>
+<li><math display="inline"><semantics><mover><mi>q</mi><mo accent="true">̇</mo></mover><annotation encoding="application/x-tex">\dot{q}</annotation></semantics></math>：<code>data.qvel</code>
+的对应分量。</li>
+</ul>
+<p>算完之后再按 <code>forcerange</code> 截断。前三个执行器（含 elbow）是
+±150，腕是 ±28。elbow 走
+<code>size3_limited</code>，<math display="inline"><semantics><msub><mi>K</mi><mi>p</mi></msub><annotation encoding="application/x-tex">K_p</annotation></semantics></math>
+/
+<math display="inline"><semantics><msub><mi>K</mi><mi>d</mi></msub><annotation encoding="application/x-tex">K_d</annotation></semantics></math>
+仍是 2000 / 400，变的是关节范围和
+<code>ctrlrange</code>（±3.1415）。腕的 500/100 与 ±28 来自
+<code>size1</code>。加载后六个执行器 <code>actuator_forcelimited</code>
+与 <code>actuator_ctrllimited</code> 都是 1：力矩限制是
+<code>forcerange</code>，设定点限制是 <code>ctrlrange</code>（elbow
+±3.1415，其余 ±6.2831）。</p>
+<p>因此 <code>data.ctrl</code> 是目标关节角，不是力矩。力矩是上式的
+<math display="inline"><semantics><mi>τ</mi><annotation encoding="application/x-tex">\tau</annotation></semantics></math>。对照：<code>q=0</code>、<math display="inline"><semantics><mrow><mover><mi>q</mi><mo accent="true">̇</mo></mover><mo>=</mo><mn>0</mn></mrow><annotation encoding="application/x-tex">\dot{q}=0</annotation></semantics></math>、<code>ctrl=-1.57</code>
+时，未截断的
+<math display="inline"><semantics><mrow><mi>τ</mi><mo>=</mo><mn>2000</mn><mo>×</mo><mo stretchy="false" form="prefix">(</mo><mi>−</mi><mn>1.57</mn><mo stretchy="false" form="postfix">)</mo><mo>=</mo><mi>−</mi><mn>3140</mn></mrow><annotation encoding="application/x-tex">\tau = 2000 \times (-1.57) = -3140</annotation></semantics></math>，截断后是
+−150。若把 <code>ctrl</code> 的数值直接当成力矩，这一步会是 −1.57
+N·m。</p>
+<p>静平衡、未顶到
+<code>forcerange</code>、接触力和限位力都不参与时，<math display="inline"><semantics><mrow><mover><mi>q</mi><mo accent="true">̇</mo></mover><mo>=</mo><mn>0</mn></mrow><annotation encoding="application/x-tex">\dot{q}=0</annotation></semantics></math>，上式剩下
+<math display="inline"><semantics><mrow><msub><mi>K</mi><mi>p</mi></msub><mo stretchy="false" form="prefix">(</mo><mrow><mi mathvariant="normal">c</mi><mi mathvariant="normal">t</mi><mi mathvariant="normal">r</mi><mi mathvariant="normal">l</mi></mrow><mo>−</mo><mi>q</mi><mo stretchy="false" form="postfix">)</mo><mo>=</mo><mi>τ</mi></mrow><annotation encoding="application/x-tex">K_p (\mathrm{ctrl} - q) = \tau</annotation></semantics></math>。零速下的
+<code>data.qfrc_bias</code> 就是广义重力
+<math display="inline"><semantics><msub><mi>τ</mi><mi>g</mi></msub><annotation encoding="application/x-tex">\tau_g</annotation></semantics></math>：同一姿态把
+<code>model.opt.gravity</code> 设为 0 再
+<code>mj_forward</code>，<code>qfrc_bias</code> 变为全
+0。平衡时执行器力矩等于这项，所以</p>
+<p><math display="block"><semantics><mrow><mrow><mi mathvariant="normal">c</mi><mi mathvariant="normal">t</mi><mi mathvariant="normal">r</mi><mi mathvariant="normal">l</mi></mrow><mo>−</mo><mi>q</mi><mo>=</mo><mfrac><msub><mi>τ</mi><mi>g</mi></msub><msub><mi>K</mi><mi>p</mi></msub></mfrac></mrow><annotation encoding="application/x-tex">
+\mathrm{ctrl} - q = \frac{\tau_g}{K_p}
+</annotation></semantics></math></p>
+<p>稳态角度误差与 <code>K_p</code>
+成反比。<code>biasprm[0]=0</code>，这个 general
+没有用来抵消重力的常数项。</p>
+<p>用 home 关键帧（<code>mj_resetDataKeyframe</code> 后
+<code>ctrl</code> 与 <code>qpos</code> 同为
+<code>[-1.5708, -1.5708, 1.5708, -1.5708, -1.5708, 0]</code>）积分 5000
+步，<code>data.time=10</code>，<code>ncon=0</code>，<code>qvel</code>
+回到约 <code>1e-14</code>。此时</p>
+<table>
+<thead>
+<tr>
+<th>joint</th>
+<th><code>ctrl - q</code>（rad）</th>
+<th><code>actuator_force</code>（N·m）</th>
+<th><code>K_p</code></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>shoulder_lift</code></td>
+<td>-0.008079391</td>
+<td>-16.158783</td>
+<td>2000</td>
+</tr>
+<tr>
+<td><code>elbow</code></td>
+<td>-0.007926223</td>
+<td>-15.852446</td>
+<td>2000</td>
+</tr>
+<tr>
+<td><code>wrist_1</code></td>
+<td>-0.002756449</td>
+<td>-1.378225</td>
+<td>500</td>
+</tr>
+</tbody>
+</table>
+<p><code>actuator_force / K_p</code> 与 <code>ctrl - q</code> 的差在
+<code>1e-14</code> rad。同一时刻
+<code>shoulder_pan</code>、<code>wrist_2</code>、<code>wrist_3</code>
+的广义重力约为 0，静差也约为
+0。这是该姿态的结果，不是这三个轴上永远没有重力。</p>
+<p><a id="sec-numeric-contract"></a></p>
+<h2 id="数值契约表">数值契约表</h2>
+<p><strong>python 片段（行号为片段内序号 1-12，可直接运行）</strong></p>
+<pre class="python"><code>   1 │ import mujoco
+   2 │
+   3 │ model = mujoco.MjModel.from_xml_path(
+   4 │     &quot;model/universal_robots_ur5e/scene.xml&quot;
+   5 │ )
+   6 │ print(&quot;nq&quot;, model.nq)
+   7 │ print(&quot;nv&quot;, model.nv)
+   8 │ print(&quot;nu&quot;, model.nu)
+   9 │ print(&quot;nbody&quot;, model.nbody)
+  10 │ print(&quot;timestep&quot;, float(model.opt.timestep))
+  11 │ print(&quot;integrator&quot;, mujoco.mjtIntegrator(int(model.opt.integrator)).name)
+  12 │ print(&quot;armature&quot;, [float(x) for x in model.dof_armature])</code></pre>
+<p>下表来自加载 <code>scene.xml</code> 后的
+<code>MjModel</code>。<code>README.md:69</code> 的探针记录了同一组
+<code>nq nv nu nbody timestep</code>。</p>
+<table>
+<thead>
+<tr>
+<th>量</th>
+<th>加载值</th>
+<th>与文件的对应</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>nq</code></td>
+<td>6</td>
+<td>6 个铰链，每个贡献 1 个位置坐标</td>
+</tr>
+<tr>
+<td><code>nv</code></td>
+<td>6</td>
+<td>每个铰链贡献 1 个速度坐标</td>
+</tr>
+<tr>
+<td><code>nu</code></td>
+<td>6</td>
+<td>6 个
+<code>&lt;general&gt;</code>（<code>ur5e.xml:126-131</code>）</td>
+</tr>
+<tr>
+<td><code>nbody</code></td>
+<td>10</td>
+<td><code>world</code>、<code>base</code>、<code>shoulder_link</code>、<code>upper_arm_link</code>、<code>forearm_link</code>、<code>wrist_1_link</code>、<code>wrist_2_link</code>、<code>wrist_3_link</code>、<code>world_frame</code>、<code>target</code></td>
+</tr>
+<tr>
+<td><code>timestep</code></td>
+<td>0.002</td>
+<td><code>&lt;option&gt;</code> 未写
+timestep（<code>ur5e.xml:4</code>）</td>
+</tr>
+<tr>
+<td><code>integrator</code></td>
+<td><code>implicitfast</code></td>
+<td><code>ur5e.xml:4</code>；枚举 <code>mjINT_IMPLICITFAST</code>，值
+3</td>
+</tr>
+<tr>
+<td><code>armature</code></td>
+<td>0.1</td>
+<td><code>ur5e.xml:9</code>；六个 <code>dof_armature</code> 都是
+0.1</td>
+</tr>
+<tr>
+<td>基座</td>
+<td>固定，无 freejoint</td>
+<td><code>base</code> 的 <code>jntnum=0</code>（<code>ur5e.xml:64</code>
+无 joint）。关节类型全是铰链。自由关节会让 <code>nq</code> 再加 7，这里
+<code>nq=6</code></td>
+</tr>
+</tbody>
+</table>
+<p><code>model.qpos0</code> 是全 0。名为 <code>home</code>
+的关键帧不会在 <code>MjData()</code> 构造时自动写入。</p>
+<p><a id="sec-mjcf-vs-urdf"></a></p>
+<h2 id="mjcf-与-urdf-的对应关系">MJCF 与 URDF 的对应关系</h2>
+<p><strong>model/universal_robots_ur5e/ur5e.xml:108-115</strong></p>
+<pre class="xml"><code> 108 │                 &lt;body name=&quot;wrist_3_link&quot; pos=&quot;0 0 0.1&quot;&gt;
+ 109 │                   &lt;inertial mass=&quot;0.1889&quot; pos=&quot;0 0.0771683 0&quot; quat=&quot;1 0 0 1&quot;
+ 110 │                     diaginertia=&quot;0.000132134 9.90863e-05 9.90863e-05&quot;/&gt;
+ 111 │                   &lt;joint name=&quot;wrist_3_joint&quot; class=&quot;size1&quot;/&gt;
+ 112 │                   &lt;geom material=&quot;linkgray&quot; mesh=&quot;wrist3&quot; class=&quot;visual&quot;/&gt;
+ 113 │                   &lt;geom class=&quot;eef_collision&quot; pos=&quot;0 0.08 0&quot; quat=&quot;1 1 0 0&quot; size=&quot;0.04 0.02&quot;/&gt;
+ 114 │                   &lt;site name=&quot;attachment_site&quot; pos=&quot;0 0.1 0&quot; quat=&quot;-1 1 0 0&quot;/&gt;
+ 115 │                 &lt;/body&gt;</code></pre>
+<p><strong>model/ur5e.urdf:229-240</strong></p>
+<pre class="xml"><code> 229 │       &lt;origin rpy=&quot;1.5707963267948966 0 0&quot; xyz=&quot;0.0 0.0771 0.0&quot;/&gt;
+ 230 │       &lt;inertia ixx=&quot;9.890410052167731e-05&quot; ixy=&quot;0.0&quot; ixz=&quot;0.0&quot; iyy=&quot;9.890410052167731e-05&quot; iyz=&quot;0.0&quot; izz=&quot;0.0001321171875&quot;/&gt;
+ 231 │     &lt;/inertial&gt;
+ 232 │   &lt;/link&gt;
+ 233 │   &lt;joint name=&quot;ee_fixed_joint&quot; type=&quot;fixed&quot;&gt;
+ 234 │     &lt;parent link=&quot;wrist_3_link&quot;/&gt;
+ 235 │     &lt;child link=&quot;ee_link&quot;/&gt;
+ 236 │     &lt;origin rpy=&quot;0.0 0.0 1.5707963267948966&quot; xyz=&quot;0.0 0.1 0.0&quot;/&gt;
+ 237 │   &lt;/joint&gt;
+ 238 │   &lt;link name=&quot;ee_link&quot;&gt;
+ 239 │     &lt;collision&gt;
+ 240 │       &lt;geometry&gt;</code></pre>
+<p>URDF 末端固定关节
+<code>ee_fixed_joint</code>（<code>model/ur5e.urdf:233-237</code>）把
+<code>ee_link</code> 安在 <code>wrist_3_link</code>
+上，<code>xyz="0.0 0.1 0.0"</code>，<code>rpy="0.0 0.0 1.5707963267948966"</code>（即绕
+Z 轴 +π/2）。MJCF 的
+<code>attachment_site</code>（<code>ur5e.xml:114</code>）在同一个父 body
+上，<code>pos="0 0.1 0"</code>，<code>quat="-1 1 0 0"</code>。位置矢量相同。姿态属性不同。</p>
+<p>编译后的 site 四元数是
+<code>[-0.7071067811865475, 0.7071067811865475, 0, 0]</code>，即绕 X 轴
+−π/2，父系旋转矩阵是</p>
+<p><math display="block"><semantics><mrow><msub><mi>R</mi><mrow><mi mathvariant="normal">s</mi><mi mathvariant="normal">i</mi><mi mathvariant="normal">t</mi><mi mathvariant="normal">e</mi><mo mathvariant="normal">,</mo><mi mathvariant="normal">l</mi><mi mathvariant="normal">o</mi><mi mathvariant="normal">c</mi><mi mathvariant="normal">a</mi><mi mathvariant="normal">l</mi></mrow></msub><mo>=</mo><mrow><mo stretchy="true" form="prefix">[</mo><mtable><mtr><mtd columnalign="center" style="text-align: center"><mn>1</mn></mtd><mtd columnalign="center" style="text-align: center"><mn>0</mn></mtd><mtd columnalign="center" style="text-align: center"><mn>0</mn></mtd></mtr><mtr><mtd columnalign="center" style="text-align: center"><mn>0</mn></mtd><mtd columnalign="center" style="text-align: center"><mn>0</mn></mtd><mtd columnalign="center" style="text-align: center"><mn>1</mn></mtd></mtr><mtr><mtd columnalign="center" style="text-align: center"><mn>0</mn></mtd><mtd columnalign="center" style="text-align: center"><mi>−</mi><mn>1</mn></mtd><mtd columnalign="center" style="text-align: center"><mn>0</mn></mtd></mtr></mtable><mo stretchy="true" form="postfix">]</mo></mrow></mrow><annotation encoding="application/x-tex">
+R_{\mathrm{site,local}} = \begin{bmatrix} 1 &amp; 0 &amp; 0 \\ 0 &amp; 0 &amp; 1 \\ 0 &amp; -1 &amp; 0 \end{bmatrix}
+</annotation></semantics></math></p>
+<p>URDF 的 rpy 是绕 Z 轴 +π/2：</p>
+<p><math display="block"><semantics><mrow><msub><mi>R</mi><mrow><mi mathvariant="normal">e</mi><mi mathvariant="normal">e</mi><mo mathvariant="normal">,</mo><mi mathvariant="normal">l</mi><mi mathvariant="normal">o</mi><mi mathvariant="normal">c</mi><mi mathvariant="normal">a</mi><mi mathvariant="normal">l</mi></mrow></msub><mo>=</mo><mrow><mo stretchy="true" form="prefix">[</mo><mtable><mtr><mtd columnalign="center" style="text-align: center"><mn>0</mn></mtd><mtd columnalign="center" style="text-align: center"><mi>−</mi><mn>1</mn></mtd><mtd columnalign="center" style="text-align: center"><mn>0</mn></mtd></mtr><mtr><mtd columnalign="center" style="text-align: center"><mn>1</mn></mtd><mtd columnalign="center" style="text-align: center"><mn>0</mn></mtd><mtd columnalign="center" style="text-align: center"><mn>0</mn></mtd></mtr><mtr><mtd columnalign="center" style="text-align: center"><mn>0</mn></mtd><mtd columnalign="center" style="text-align: center"><mn>0</mn></mtd><mtd columnalign="center" style="text-align: center"><mn>1</mn></mtd></mtr></mtable><mo stretchy="true" form="postfix">]</mo></mrow></mrow><annotation encoding="application/x-tex">
+R_{\mathrm{ee,local}} = \begin{bmatrix} 0 &amp; -1 &amp; 0 \\ 1 &amp; 0 &amp; 0 \\ 0 &amp; 0 &amp; 1 \end{bmatrix}
+</annotation></semantics></math></p>
+<p>两者都表达在 <code>wrist_3_link</code> 里，相对旋转
+<code>R_ee,local</code> 的转置乘 <code>R_site,local</code> 就是下面的
+<code>M</code>。</p>
+<p>ikpy 4.2.1 按 <code>MuJoCo_project.py:114-116</code> 建链时，会在
+URDF 外面加一个 <code>Base link</code>，末节名字是
+<code>ee_fixed_joint</code>（子 link 为 <code>ee_link</code>）。所以
+<code>active_links_mask</code> 长度是 8，首尾为 False，中间 6 个关节为
+True。<code>forward_kinematics([0, q1, …, q6, 0])</code> 的 3×3 块记为
+<code>R_ikpy</code>，平移记为末端位置。<code>data.site_xmat</code>
+按行优先排成 3×3，记为
+<code>R_site</code>。在全零、home、<code>MuJoCo_project.py:32</code> 的
+<code>[0, 0, 2.65, -1.3, 1.55, 0]</code>，以及
+<code>[0.4, -0.7, 1.2, -0.5, 0.8, -1.1]</code> 四个姿态上：</p>
+<ul>
+<li>位置差的最大绝对值不超过 <code>2.3×10⁻¹⁶</code> m。父系里相同的
+<code>0 0.1 0</code>
+平移，加上两条链一致的关节原点，使末端原点重合。</li>
+<li>姿态差是常数矩阵。实测</li>
+</ul>
+<p><math display="block"><semantics><mrow><mi>M</mi><mo>=</mo><msubsup><mi>R</mi><mrow><mi mathvariant="normal">i</mi><mi mathvariant="normal">k</mi><mi mathvariant="normal">p</mi><mi mathvariant="normal">y</mi></mrow><mi mathvariant="sans-serif">𝖳</mi></msubsup><msub><mi>R</mi><mrow><mi mathvariant="normal">s</mi><mi mathvariant="normal">i</mi><mi mathvariant="normal">t</mi><mi mathvariant="normal">e</mi></mrow></msub><mo>=</mo><mrow><mo stretchy="true" form="prefix">[</mo><mtable><mtr><mtd columnalign="center" style="text-align: center"><mn>0</mn></mtd><mtd columnalign="center" style="text-align: center"><mn>0</mn></mtd><mtd columnalign="center" style="text-align: center"><mn>1</mn></mtd></mtr><mtr><mtd columnalign="center" style="text-align: center"><mi>−</mi><mn>1</mn></mtd><mtd columnalign="center" style="text-align: center"><mn>0</mn></mtd><mtd columnalign="center" style="text-align: center"><mn>0</mn></mtd></mtr><mtr><mtd columnalign="center" style="text-align: center"><mn>0</mn></mtd><mtd columnalign="center" style="text-align: center"><mi>−</mi><mn>1</mn></mtd><mtd columnalign="center" style="text-align: center"><mn>0</mn></mtd></mtr></mtable><mo stretchy="true" form="postfix">]</mo></mrow></mrow><annotation encoding="application/x-tex">
+M = R_{\mathrm{ikpy}}^{\mathsf T} R_{\mathrm{site}} = \begin{bmatrix} 0 &amp; 0 &amp; 1 \\ -1 &amp; 0 &amp; 0 \\ 0 &amp; -1 &amp; 0 \end{bmatrix}
+</annotation></semantics></math></p>
+<p>四个姿态上，<code>M</code> 与这个整数矩阵的元素差最大约
+<code>1.4×10⁻¹⁵</code>。<code>\mathrm{tr}(M)=0</code>，转角</p>
+<p><math display="block"><semantics><mrow><mi>θ</mi><mo>=</mo><mrow><mi mathvariant="normal">arccos</mi><mo>&#8289;</mo></mrow><mfrac><mrow><mrow><mi mathvariant="normal">t</mi><mi mathvariant="normal">r</mi></mrow><mo stretchy="false" form="prefix">(</mo><mi>M</mi><mo stretchy="false" form="postfix">)</mo><mo>−</mo><mn>1</mn></mrow><mn>2</mn></mfrac><mo>=</mo><mrow><mi mathvariant="normal">arccos</mi><mo>&#8289;</mo></mrow><mrow><mo stretchy="true" form="prefix">(</mo><mi>−</mi><mfrac><mn>1</mn><mn>2</mn></mfrac><mo stretchy="true" form="postfix">)</mo></mrow><mo>=</mo><msup><mn>120</mn><mo>∘</mo></msup></mrow><annotation encoding="application/x-tex">
+\theta = \arccos\frac{\mathrm{tr}(M)-1}{2} = \arccos\left(-\frac{1}{2}\right) = 120^\circ
+</annotation></semantics></math></p>
+<p>因此 <code>R_site = R_ikpy M</code>。脚本里的
+<code>ee_euler</code>（<code>MuJoCo_project.py:127</code>）经
+<code>transforms3d.euler.euler2mat</code>（<code>:129</code>）交给
+<code>inverse_kinematics</code>（<code>:132-134</code>），目标姿态是这条
+URDF 链末端 <code>ee_link</code> 相对世界的旋转，也就是
+<code>R_ikpy</code> 所在的坐标系。<code>data.site_xmat</code> 是
+<code>attachment_site</code> 相对世界的旋转。二者相差这一个固定的
+<code>M</code>，不能逐元素比较。位置可以直接比。</p>
+<p><a id="sec-joint-limits"></a></p>
+<h2 id="限位差异表">限位差异表</h2>
+<p><strong>model/ur5e.urdf:65-72</strong></p>
+<pre class="xml"><code>  65 │   &lt;joint name=&quot;shoulder_pan_joint&quot; type=&quot;revolute&quot;&gt;
+  66 │     &lt;parent link=&quot;base_link&quot;/&gt;
+  67 │     &lt;child link=&quot;shoulder_link&quot;/&gt;
+  68 │     &lt;origin rpy=&quot;0.0 0.0 0.0&quot; xyz=&quot;0.0 0.0 0.163&quot;/&gt;
+  69 │     &lt;axis xyz=&quot;0 0 1&quot;/&gt;
+  70 │     &lt;limit effort=&quot;150.0&quot; lower=&quot;-3.0&quot; upper=&quot;3.0&quot; velocity=&quot;3.14&quot;/&gt;
+  71 │     &lt;dynamics damping=&quot;0.0&quot; friction=&quot;0.0&quot;/&gt;
+  72 │   &lt;/joint&gt;</code></pre>
+<p><strong>model/ur5e.urdf:93-100</strong></p>
+<pre class="xml"><code>  93 │   &lt;joint name=&quot;shoulder_lift_joint&quot; type=&quot;revolute&quot;&gt;
+  94 │     &lt;parent link=&quot;shoulder_link&quot;/&gt;
+  95 │     &lt;child link=&quot;upper_arm_link&quot;/&gt;
+  96 │     &lt;origin rpy=&quot;0.0 1.5707963267948966 0.0&quot; xyz=&quot;0.0 0.138 0.0&quot;/&gt;
+  97 │     &lt;axis xyz=&quot;0 1 0&quot;/&gt;
+  98 │     &lt;limit effort=&quot;150.0&quot; lower=&quot;-3.141592653589793&quot; upper=&quot;3.141592653589793&quot; velocity=&quot;3.14&quot;/&gt;
+  99 │     &lt;dynamics damping=&quot;0.0&quot; friction=&quot;0.0&quot;/&gt;
+ 100 │   &lt;/joint&gt;</code></pre>
+<p><strong>model/ur5e.urdf:121-128</strong></p>
+<pre class="xml"><code> 121 │   &lt;joint name=&quot;elbow_joint&quot; type=&quot;revolute&quot;&gt;
+ 122 │     &lt;parent link=&quot;upper_arm_link&quot;/&gt;
+ 123 │     &lt;child link=&quot;forearm_link&quot;/&gt;
+ 124 │     &lt;origin rpy=&quot;0.0 0.0 0.0&quot; xyz=&quot;0.0 -0.131 0.425&quot;/&gt;
+ 125 │     &lt;axis xyz=&quot;0 1 0&quot;/&gt;
+ 126 │     &lt;limit effort=&quot;150.0&quot; lower=&quot;-3.141592653589793&quot; upper=&quot;3.141592653589793&quot; velocity=&quot;3.14&quot;/&gt;
+ 127 │     &lt;dynamics damping=&quot;0.0&quot; friction=&quot;0.0&quot;/&gt;
+ 128 │   &lt;/joint&gt;</code></pre>
+<p><strong>model/ur5e.urdf:149-156</strong></p>
+<pre class="xml"><code> 149 │   &lt;joint name=&quot;wrist_1_joint&quot; type=&quot;revolute&quot;&gt;
+ 150 │     &lt;parent link=&quot;forearm_link&quot;/&gt;
+ 151 │     &lt;child link=&quot;wrist_1_link&quot;/&gt;
+ 152 │     &lt;origin rpy=&quot;0.0 1.5707963267948966 0.0&quot; xyz=&quot;0.0 0.0 0.392&quot;/&gt;
+ 153 │     &lt;axis xyz=&quot;0 1 0&quot;/&gt;
+ 154 │     &lt;limit effort=&quot;28.0&quot; lower=&quot;-3.141592653589793&quot; upper=&quot;3.141592653589793&quot; velocity=&quot;6.28&quot;/&gt;
+ 155 │     &lt;dynamics damping=&quot;0.0&quot; friction=&quot;0.0&quot;/&gt;
+ 156 │   &lt;/joint&gt;</code></pre>
+<p><strong>model/ur5e.urdf:177-184</strong></p>
+<pre class="xml"><code> 177 │   &lt;joint name=&quot;wrist_2_joint&quot; type=&quot;revolute&quot;&gt;
+ 178 │     &lt;parent link=&quot;wrist_1_link&quot;/&gt;
+ 179 │     &lt;child link=&quot;wrist_2_link&quot;/&gt;
+ 180 │     &lt;origin rpy=&quot;0.0 0.0 0.0&quot; xyz=&quot;0.0 0.127 0.0&quot;/&gt;
+ 181 │     &lt;axis xyz=&quot;0 0 1&quot;/&gt;
+ 182 │     &lt;limit effort=&quot;28.0&quot; lower=&quot;-3.141592653589793&quot; upper=&quot;3.141592653589793&quot; velocity=&quot;6.28&quot;/&gt;
+ 183 │     &lt;dynamics damping=&quot;0.0&quot; friction=&quot;0.0&quot;/&gt;
+ 184 │   &lt;/joint&gt;</code></pre>
+<p><strong>model/ur5e.urdf:205-212</strong></p>
+<pre class="xml"><code> 205 │   &lt;joint name=&quot;wrist_3_joint&quot; type=&quot;revolute&quot;&gt;
+ 206 │     &lt;parent link=&quot;wrist_2_link&quot;/&gt;
+ 207 │     &lt;child link=&quot;wrist_3_link&quot;/&gt;
+ 208 │     &lt;origin rpy=&quot;0.0 0.0 0.0&quot; xyz=&quot;0.0 0.0 0.1&quot;/&gt;
+ 209 │     &lt;axis xyz=&quot;0 1 0&quot;/&gt;
+ 210 │     &lt;limit effort=&quot;28.0&quot; lower=&quot;-3.141592653589793&quot; upper=&quot;3.141592653589793&quot; velocity=&quot;6.28&quot;/&gt;
+ 211 │     &lt;dynamics damping=&quot;0.0&quot; friction=&quot;0.0&quot;/&gt;
+ 212 │   &lt;/joint&gt;</code></pre>
+<p>ikpy 链上六个活动关节的 <code>bounds</code> 与 URDF
+<code>&lt;limit lower upper&gt;</code> 一致。MuJoCo 侧是上一节加载的
+<code>jnt_range</code>，另外给出执行器
+<code>ctrlrange</code>，因为设定点还会被这里截断。</p>
+<table>
+<thead>
+<tr>
+<th>joint</th>
+<th>URDF <code>&lt;limit&gt;</code></th>
+<th>文件位置</th>
+<th>MJCF <code>jnt_range</code></th>
+<th>MJCF <code>ctrlrange</code></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>shoulder_pan_joint</code></td>
+<td>±3.0</td>
+<td><code>model/ur5e.urdf:70</code></td>
+<td>±6.28319</td>
+<td>±6.2831</td>
+</tr>
+<tr>
+<td><code>shoulder_lift_joint</code></td>
+<td>±3.141592653589793</td>
+<td><code>model/ur5e.urdf:98</code></td>
+<td>±6.28319</td>
+<td>±6.2831</td>
+</tr>
+<tr>
+<td><code>elbow_joint</code></td>
+<td>±3.141592653589793</td>
+<td><code>model/ur5e.urdf:126</code></td>
+<td>±3.1415</td>
+<td>±3.1415</td>
+</tr>
+<tr>
+<td><code>wrist_1_joint</code></td>
+<td>±3.141592653589793</td>
+<td><code>model/ur5e.urdf:154</code></td>
+<td>±6.28319</td>
+<td>±6.2831</td>
+</tr>
+<tr>
+<td><code>wrist_2_joint</code></td>
+<td>±3.141592653589793</td>
+<td><code>model/ur5e.urdf:182</code></td>
+<td>±6.28319</td>
+<td>±6.2831</td>
+</tr>
+<tr>
+<td><code>wrist_3_joint</code></td>
+<td>±3.141592653589793</td>
+<td><code>model/ur5e.urdf:210</code></td>
+<td>±6.28319</td>
+<td>±6.2831</td>
+</tr>
+</tbody>
+</table>
+<p><code>3.141592653589793</code> 就是 π。π − 3.1415 =
+<code>9.265×10⁻⁵</code> rad。</p>
+<p><code>MuJoCo_project.py:114-116</code> 的 ikpy 在 URDF 的
+<code>bounds</code> 里求解；仿真器按 MJCF 的 <code>jnt_range</code>
+约束关节，并按 <code>ctrlrange</code> 限制
+<code>data.ctrl</code>。后果：</p>
+<ul>
+<li><code>shoulder_pan</code>（URDF ±3.0）、<code>shoulder_lift</code>
+和三个 wrist（URDF ±π）的 URDF 区间落在 MJCF 区间内部。MJCF 允许、而
+ikpy 不会返回的角度，例如 pan 的 4 rad，不会出现在这些调用的解里。</li>
+<li>elbow 相反：URDF 的 ±π 比 MJCF 的 ±3.1415 每侧宽
+<code>9.265×10⁻⁵</code> rad，elbow 的 <code>ctrlrange</code> 也是
+±3.1415。解若顶在 URDF 边界上，写进 <code>data.ctrl</code> 时会被收到
+±3.1415，关节本身也不能越过 <code>jnt_range</code>。</li>
+</ul>
+<p><a id="sec-minimal-experiments"></a></p>
+<h2 id="三个最小实验">三个最小实验</h2>
+<p><strong>三条实验命令总览（行号为片段内序号 1-3）</strong></p>
+<pre class="bash"><code>   1 │ uv run python -c &#39;import mujoco; m = mujoco.MjModel.from_xml_path(&quot;model/universal_robots_ur5e/scene.xml&quot;); print(m.nq, m.nv, m.nu, m.nbody, m.opt.timestep)&#39;
+   2 │ uv run python - &lt;&lt;&#39;PY&#39;   # 完整片段见「不一致的 qpos 与 ctrl」小节
+   3 │ uv run python MuJoCo_project.py</code></pre>
+<p>命令都在仓库根目录执行。</p>
+<h3 id="打印模型维度">打印模型维度</h3>
+<pre class="bash"><code>uv run python -c &#39;import mujoco; m = mujoco.MjModel.from_xml_path(&quot;model/universal_robots_ur5e/scene.xml&quot;); print(m.nq, m.nv, m.nu, m.nbody, m.opt.timestep)&#39;</code></pre>
+<p>应该看到：</p>
+<pre class="text"><code>6 6 6 10 0.002</code></pre>
+<p>这就是「数值契约表」的前五项。</p>
+<h3 id="不一致的-qpos-与-ctrl">不一致的 qpos 与 ctrl</h3>
+<p><code>MuJoCo_project.py:32-34</code> 把 <code>qpos</code> 设成
+<code>[0, 0, 2.65, -1.3, 1.55, 0]</code>，把 <code>ctrl</code> 设成
+<code>[-1.57, -1.34, 2.65, -1.3, 1.55, 0]</code>。前两轴差 1.57 rad 和
+1.34 rad，后四轴相同。下面先走这一步，再走 <code>ctrl</code> 抄
+<code>qpos</code> 的对照步。</p>
+<pre class="bash"><code>uv run python &lt;&lt; &#39;PY&#39;
+import numpy as np
+import mujoco
+
+model = mujoco.MjModel.from_xml_path(&quot;model/universal_robots_ur5e/scene.xml&quot;)
+q = np.array([0.0, 0.0, 2.65, -1.3, 1.55, 0.0])
+
+data = mujoco.MjData(model)
+data.qpos[:6] = q
+data.ctrl[:6] = [-1.57, -1.34, 2.65, -1.3, 1.55, 0.0]
+mujoco.mj_step(model, data)
+print(&quot;mismatch time&quot;, data.time)
+print(&quot;mismatch force&quot;, data.actuator_force)
+print(&quot;mismatch qvel&quot;, data.qvel)
+
+data = mujoco.MjData(model)
+data.qpos[:6] = q
+data.ctrl[:6] = q
+mujoco.mj_step(model, data)
+print(&quot;matched force&quot;, data.actuator_force)
+print(&quot;matched qvel&quot;, data.qvel)
+PY</code></pre>
+<p>应该看到：</p>
+<ul>
+<li><code>mismatch time</code> 是 0.002。</li>
+<li><code>mismatch force</code> 是
+<code>[-150, -150, 0, 0, 0, 0]</code>。前两轴打满
+<code>forcerange</code> 的下界。未截断值分别是
+<code>2000×(-1.57)=-3140</code> 和
+<code>2000×(-1.34)=-2680</code>。后四轴在这一步求力矩时
+<code>ctrl=q</code> 且 <code>qvel</code> 仍为 0，所以力矩是 0。</li>
+<li><code>mismatch qvel</code> 约为
+<code>[-0.704679, -1.150792, 0.783114, 0.512595, 0.015413, -0.142630]</code>。一个
+0.002 s 的步里前两轴已经到约 −0.70 rad/s 和 −1.15 rad/s。</li>
+<li>对照步的 <code>matched force</code> 全是
+0，<code>matched qvel</code> 约为
+<code>[-0.347169, -0.629834, 0.765168, 0.475089, 0.013192, -0.116231]</code>。重力在两步里都会产生速度；不一致那一步多出来的，是前两轴被
+±150 N·m 打满之后的速度差。后四轴两步接近，因为它们的 <code>ctrl</code>
+本来就等于 <code>qpos</code>。</li>
+</ul>
+<p><code>ur5e()</code> 随后在循环里持续
+<code>mj_step</code>（<code>MuJoCo_project.py:36-38</code>），这个初始误差会一直被伺服拉。</p>
+<h3 id="打开场景">打开场景</h3>
+<pre class="bash"><code>uv run python MuJoCo_project.py</code></pre>
+<p><code>MuJoCo_project.py:558-560</code> 调用
+<code>ur5e()</code>，加载的就是
+<code>scene.xml</code>（<code>:29</code>）。判据：</p>
+<ul>
+<li>原点有三根轴：X 红、Y 绿、Z 蓝，长度 0.3 m，来自
+<code>world_frame</code> 的
+<code>fromto</code>（<code>scene.xml:24-30</code>）。<code>contype=0</code>，与机器人不相撞。</li>
+<li>有一个绿色半透明球，球心 <code>(-0.13, 0.5, 0.1)</code>，半径
+0.02，rgba 加载值
+<code>[0, 1, 0, 0.5]</code>（<code>scene.xml:33-34</code>）。</li>
+<li>手臂会离开全零姿态并运动，因为 <code>ur5e()</code>
+用的是上一节那组不一致的 <code>qpos</code> / <code>ctrl</code>。</li>
+<li>这个绿球的 y 是 0.5。<code>point()</code> 的目标位置是
+<code>[-0.13, 0.6, 0.1]</code>（<code>MuJoCo_project.py:126</code>），<code>JointSpaceControl</code>
+用了同一组数（<code>:195</code>）。球和这两处 IK 目标只在 y 上差 0.1
+m，不是同一个点。本次命令也没有调用 <code>point()</code>。</li>
+<li>胶囊碰撞体是 group 3，默认 <code>MjvOption.geomgroup</code>
+不显示它们。窗口里的臂体是 group 2 的 mesh。</li>
+<li>本机 Wayland 会话下，终端可能打印
+<code>OpenGL error 0x502</code>。含义见下一节，窗口里的轴和绿球仍然按上面的
+geom 绘制。</li>
+</ul>
+<p><a id="sec-pitfalls"></a></p>
+<h2 id="常见坑">常见坑</h2>
+<p><strong>model/universal_robots_ur5e/ur5e.xml:3-23</strong></p>
+<pre class="xml"><code>   3 │
+   4 │   &lt;option integrator=&quot;implicitfast&quot;/&gt;
+   5 │
+   6 │   &lt;default&gt;
+   7 │     &lt;default class=&quot;ur5e&quot;&gt;
+   8 │       &lt;material specular=&quot;0.5&quot; shininess=&quot;0.25&quot;/&gt;
+   9 │       &lt;joint axis=&quot;0 1 0&quot; range=&quot;-6.28319 6.28319&quot; armature=&quot;0.1&quot;/&gt;
+  10 │       &lt;general gaintype=&quot;fixed&quot; biastype=&quot;affine&quot; ctrlrange=&quot;-6.2831 6.2831&quot; gainprm=&quot;2000&quot; biasprm=&quot;0 -2000 -400&quot;
+  11 │         forcerange=&quot;-150 150&quot;/&gt;
+  12 │       &lt;default class=&quot;size3&quot;&gt;
+  13 │         &lt;default class=&quot;size3_limited&quot;&gt;
+  14 │           &lt;joint range=&quot;-3.1415 3.1415&quot;/&gt;
+  15 │           &lt;general ctrlrange=&quot;-3.1415 3.1415&quot;/&gt;
+  16 │         &lt;/default&gt;
+  17 │       &lt;/default&gt;
+  18 │       &lt;default class=&quot;size1&quot;&gt;
+  19 │         &lt;general gainprm=&quot;500&quot; biasprm=&quot;0 -500 -100&quot; forcerange=&quot;-28 28&quot;/&gt;
+  20 │       &lt;/default&gt;
+  21 │       &lt;default class=&quot;visual&quot;&gt;
+  22 │         &lt;geom type=&quot;mesh&quot; contype=&quot;0&quot; conaffinity=&quot;0&quot; group=&quot;2&quot;/&gt;
+  23 │       &lt;/default&gt;</code></pre>
+<p><strong>model/universal_robots_ur5e/ur5e.xml:134-136</strong></p>
+<pre class="xml"><code> 134 │   &lt;keyframe&gt;
+ 135 │     &lt;key name=&quot;home&quot; qpos=&quot;-1.5708 -1.5708 1.5708 -1.5708 -1.5708 0&quot; ctrl=&quot;-1.5708 -1.5708 1.5708 -1.5708 -1.5708 0&quot;/&gt;
+ 136 │   &lt;/keyframe&gt;</code></pre>
+<table>
+<thead>
+<tr>
+<th>坑</th>
+<th>本仓库里的事实</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>include / meshdir 相对路径</td>
+<td><code>&lt;include file="ur5e.xml"/&gt;</code>（<code>scene.xml:2</code>）相对
+<code>scene.xml</code> 所在目录，与 cwd
+无关。<code>meshdir="assets"</code>（<code>ur5e.xml:3</code>）相对顶层
+XML 所在目录。二者同目录时网格在
+<code>model/universal_robots_ur5e/assets/</code>。顶层文件若换到没有
+<code>assets/</code> 的目录，obj 会找不到。<code>from_xml_path</code>
+的相对路径参数仍然相对 cwd。</td>
+</tr>
+<tr>
+<td>可视 geom 的 <code>contype</code> / <code>conaffinity</code> =
+0</td>
+<td><code>visual</code> class 写了这两项为
+0（<code>ur5e.xml:22</code>），加载后 mesh
+不参与接触。<code>collision</code> 加载后是
+1/1。<code>world_frame</code> 与 <code>target</code> 在
+<code>scene.xml:25-34</code> 也显式写了 0，只做标注。</td>
+</tr>
+<tr>
+<td><code>ctrl</code> 是设定点，力矩另算</td>
+<td><code>&lt;general&gt;</code> 用 <code>gainprm</code> /
+<code>biasprm</code> 把 <code>ctrl</code> 和
+<code>q</code>、<code>qvel</code> 合成力矩，再按 <code>forcerange</code>
+截断。<code>MuJoCo_project.py:32-34</code> 前两轴的角度差会在第一步打出
+−150 N·m；−1.57 是角度差，不是这一步的力矩。</td>
+</tr>
+<tr>
+<td><code>armature</code> 与 <code>implicitfast</code></td>
+<td><code>integrator="implicitfast"</code> 在
+<code>ur5e.xml:4</code>，加载枚举值 3。<code>armature="0.1"</code> 在
+<code>:9</code>。六个 <code>dof_damping</code> 都是 0，速度项在执行器
+<code>biasprm</code> 的第三个数里，不在关节 damping 里。把
+<code>dof_armature</code> 改成 0 后，广义质量矩阵的六个对角元各减小
+0.1：<code>armature</code> 是加在对角线上的惯量。</td>
+</tr>
+<tr>
+<td><code>keyframe home</code> 同时给 <code>qpos</code> 与
+<code>ctrl</code></td>
+<td><code>ur5e.xml:135</code> 把同一组六个数写入 <code>qpos</code> 和
+<code>ctrl</code>。<code>MjData()</code> 的初值仍是全
+0，<code>model.qpos0</code> 也是全 0；要
+<code>mj_resetDataKeyframe(model, data, 0)</code> 才两者一起变成
+home。只把 <code>qpos</code> 设成 home、<code>ctrl</code> 留 0，再
+<code>mj_forward</code>，<code>actuator_force</code> 是
+<code>[150, 150, -150, 28, 28, 0]</code>，前五个执行器打满
+<code>forcerange</code>。位置伺服的关键帧必须带设定点。</td>
+</tr>
+<tr>
+<td>Wayland 下 OpenGL <code>0x502</code></td>
+<td>本机是 GNOME on
+Wayland（<code>README.md:19</code>）。<code>mujoco.viewer</code> 建 UI
+上下文时会打印
+<code>WARNING: OpenGL error 0x502 in or before mjr_makeContext</code>（<code>README.md:98</code>，日志样例
+<code>MUJOCO_LOG.TXT:1</code>）。<code>scripts/verify_window_render.py:3-4</code>
+用这个警告当探针：它不表示这一帧没有画出来。</td>
+</tr>
+</tbody>
+</table>
+<p><a id="sec-next-steps"></a></p>
+<h2 id="下一步">下一步</h2>
+<p><strong>MuJoCo_project.py:558-565</strong></p>
+<pre class="python"><code> 558 │ if __name__ == &quot;__main__&quot;:
+ 559 │     # car()
+ 560 │     ur5e()
+ 561 │     # ur5e_vision()
+ 562 │     # point()
+ 563 │     # JointSpaceControl()
+ 564 │     # MoveCurve()
+ 565 │     # MoveEllipse()</code></pre>
+<ul class="task-list">
+<li><label><input
+type="checkbox" />关节空间控制：<code>JointSpaceControl</code>（<code>MuJoCo_project.py:183</code>）已经把路径点写进
+<code>data.ctrl</code>。接着要处理的是 <code>K_p</code>
+下的重力静差，以及 URDF <code>bounds</code> 与 MJCF
+<code>jnt_range</code> / <code>ctrlrange</code> 两套限位。</label></li>
+<li><label><input
+type="checkbox" />笛卡尔控制：<code>MoveCurve</code>（<code>MuJoCo_project.py:292</code>）和
+<code>MoveEllipse</code>（<code>:451</code>）把 ikpy 的
+<code>ee_link</code> 姿态送给求解器。拿 <code>data.site_xmat</code>
+做姿态误差之前，先乘上「MJCF 与 URDF 的对应关系」里的固定矩阵
+<code>M</code>。位置可以直接用
+<code>data.site_xpos</code>。</label></li>
+<li><label><input
+type="checkbox" />夹爪装配：<code>model/robotiq_2f85/2f85.xml</code>
+是单独的模型，指尖 site 为
+<code>pinch</code>（<code>model/robotiq_2f85/2f85.xml:67</code>）。当前
+<code>scene.xml</code> 没有 include 它。臂上的安装点是
+<code>attachment_site</code>（<code>ur5e.xml:114</code>）。</label></li>
+</ul>
+</main>
+<script>
+(function () {
+  var links = document.querySelectorAll("nav.toc a");
+  var byId = new Map();
+  links.forEach(function (link) {
+    var href = link.getAttribute("href") || "";
+    if (href.charAt(0) === "#") byId.set(href.slice(1), link);
+  });
+  function activate(id) {
+    links.forEach(function (link) {
+      var on = link.getAttribute("href") === "#" + id;
+      link.classList.toggle("active", on);
+      if (on) link.setAttribute("aria-current", "true");
+      else link.removeAttribute("aria-current");
+    });
+  }
+  if (typeof IntersectionObserver !== "function") return;
+  var observer = new IntersectionObserver(function (entries) {
+    entries.forEach(function (entry) {
+      if (entry.isIntersecting) activate(entry.target.id);
+    });
+  }, { rootMargin: "-16px 0px -70% 0px", threshold: 0 });
+  byId.forEach(function (_link, id) {
+    var el = document.getElementById(id);
+    if (el) observer.observe(el);
+  });
+})();
+</script>
+</body>
+</html>
